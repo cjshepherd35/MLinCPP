@@ -4,13 +4,13 @@
 
 int main()
 {
-    srand(time(0));
-    float lr = 0.01;
+    srand(69);
+    float lr = 0.1;
     int n_inputs = 2;
     int  n_neurons = 2;
     int n_output = 1;
     int n_samples = 4;
-    int num_iters = 30002;
+    int num_iters = 3;
 
     LayerDense ld1(n_inputs, n_neurons, true, 4);
     LayerDense ld2(n_neurons, n_output, true, 4);
@@ -19,10 +19,10 @@ int main()
     Sigmoid sig2;
     BinaryCrossentropy_Loss bl;
     //Activation_softmax soft;
-    float td[] = {0,0,0,
+    double td[] = {0,0,0,
                   0,1,1,
                   1,0,1,
-                  1,1,0
+                  1,1,1
                   };
 
     //when changing datasets, change here
@@ -55,11 +55,12 @@ int main()
         relu.forward(ld1.output);
         ld2.forward(relu.output);
         sig2.forward(ld2.output);
-        if (j % 1000 == 0)
-        {
-            std::cout << "output \n";
-            mat_print(sig2.output);
-        }
+
+        // if (j % 100 == 0)
+        // {
+        //     std::cout << "output \n";
+        //     mat_print(sig2.output);
+        // }
         
         bl.backward(sig2.output, tro);
         
