@@ -11,6 +11,7 @@ public:
     LayerDense(int n_inputs, int n_neurons, bool bias, int num_samples);
     void forward(Mat inputs);
     void backward(Mat dvalues);
+    void randomize(float percentrand);
     //~LayerDense();
     Mat output;
     Mat dinputs;
@@ -86,11 +87,195 @@ void LayerDense::backward(Mat dvalues)
 
 
 
+void LayerDense::randomize(float percentrand)
+{
+    for (size_t i = 0; i < weights.rows; i++)
+    {
+        for (size_t j = 0; j < weights.cols; j++)
+        {
+            float randfl = rand() / RAND_MAX;
+            if (randfl > percentrand)
+            {
+                MAT_AT(weights,i,j) = rand() / RAND_MAX;
+            }
+            
+        }
+        
+    }
+    
+}
+
+
+
+
+class Convolution2D
+{
+public:
+    Convolution2D(int depth, int kernel_size, int input_depth, int input_height, int input_width); 
+    void forward(std::vector<Mat> inputs);
+    void backward(std::vector<std::vector<Mat>> dvalues);
+    void cross_correlation2d(Mat a, Mat b, Mat output);
+    void convolve2d(Mat a, Mat b, Mat output);
+
+    std::vector<std::vector<Mat>> output;
+    std::vector<Mat> inputscopy;
+    std::vector<Mat> dinputs;
+    std::vector<Mat> biases;
+    std::vector<Mat> dbiases;
+    std::vector<Mat> weights;
+    std::vector<Mat> dweights;
+    
+};
+
+Convolution2D::Convolution2D(int depth, int kernel_size, int input_depth, int input_height, int input_width)
+{
+    
+    std::vector<Mat> tempout;
+    
+    for (size_t i = 0; i < input_depth; i++)
+    {
+        for (size_t j = 0; j < depth; j++)
+        {
+            tempout.push_back(mat_alloc(input_height - kernel_size + 1, input_width - kernel_size + 1));
+        }
+        output.push_back(std::move(tempout));
+        dinputs.push_back(mat_alloc(input_height, input_width));
+        inputscopy.push_back(mat_alloc(input_height, input_width));
+    }
+    
+    for (size_t i = 0; i < depth; i++)
+    {
+        weights.push_back(mat_alloc(kernel_size, kernel_size));
+        mat_rand(weights[i], -1.f, 1.f);
+        dweights.push_back(mat_alloc(kernel_size, kernel_size));
+        biases.push_back(mat_alloc(input_height-kernel_size+1, input_width-kernel_size+1));
+        dbiases.push_back(mat_alloc(input_height-kernel_size+1, input_width-kernel_size+1));
+    }
+}
+
+void Convolution2D::forward(std::vector<Mat> inputs)
+{
+    // inputs is input image
+    int kernel_size = weights[0].cols;
+    int input_height = inputs[0].rows;
+    int input_width = inputs[0].cols;
+   
+    for (size_t i = 0; i < output.size(); i++)
+    {
+        mat_copy(inputscopy[i], inputs[i]);
+        for (size_t j = 0; j < output[i].size(); j++)
+        {
+            mat_copy(output[i][j], biases[j]);
+        }
+    }
+
+    for (size_t i = 0; i < inputs.size(); i++)
+    {
+        for (size_t j = 0; j < output[0].size(); j++)
+        {
+            cross_correlation2d(inputs[i], weights[j], output[i][j]);
+        }
+    }
+}
+
+void Convolution2D::cross_correlation2d(Mat a, Mat b, Mat output)
+{
+    // a is input, b is kernel
+    int kernel_size = b.rows;
+    int input_height = a.rows;
+    int input_width = a.cols;
+    // std::cout << "dweights " << output.rows << " input h " << input_height << " dvals h " << kernel_size << std::endl;
+    for (size_t i = 0; i < input_height - kernel_size+1; i++)
+    {
+        for (size_t j = 0; j < input_width - kernel_size+1; j++)
+        {
+            double sum = 0.0;
+            for (size_t k = 0; k < kernel_size; k++)
+            {
+                for (size_t l = 0; l < kernel_size; l++)
+                {
+                    int ii = i - k;
+                    int jj = j - l;
+                    if (ii >= 0 && ii < input_height && jj >= 0 && jj < input_width)
+                    {
+                        sum += MAT_AT(a, ii, jj) * MAT_AT(b, k, l);
+                    }
+                    
+                }   
+            }
+            MAT_AT(output, i, j) += sum;
+        }
+    }
+}
+
+//this is wrong.
+void Convolution2D::convolve2d(Mat a, Mat b, Mat output)
+{
+    // a is input, b is kernel
+    int kernel_height = b.rows;
+    int kernel_width = b.cols;
+    int input_height = a.rows;
+    int input_width = a.cols;
+
+    for (size_t i = 0; i < input_height; i++)
+    {
+        // std::cout << i << " conv\n";
+        for (size_t j = 0; j < input_width; j++)
+        {
+            double sum = 0.0;
+            for (size_t k = 0; k < kernel_height; k++)
+            {
+                for (size_t l = 0; l < kernel_width; l++)
+                {
+                    int ii = i - k;
+                    int jj = j - l;
+                    if (ii >=0 && ii < kernel_height && jj >=  0 && jj < kernel_width)
+                    {
+                        sum = MAT_AT(a, ii, jj) * MAT_AT(b, b.rows-1-k, b.cols-1-l );
+                    }
+                }
+            }
+            MAT_AT(output, i, j) = sum;
+        }
+    }
+}
+
+void Convolution2D::backward(std::vector<std::vector<Mat>> dvalues)
+{
+    
+    for (size_t i = 0; i < dweights.size(); i++)
+    {
+        mat_fill(dweights[i], 0.f);
+    }
+    
+    for (size_t i = 0; i < output.size(); i++)
+    {
+        mat_fill(dinputs[i], 0.f);
+        // std::cout << "here " << dweights[i].rows << std::endl;
+        for (size_t j = 0; j < output[0].size(); j++)
+        {
+            //fix this.../././././.
+            // mat_copy(dbiases[i][j], dvalues[i][j]);
+            for (size_t k = 0; k < dvalues[i][j].rows; k++)
+            {
+                for (size_t l = 0; l < dvalues[i][j].cols; l++)
+                {
+                    MAT_AT(dbiases[j],k,l) += MAT_AT(dvalues[i][j],k,l);
+                }   
+            }
+            cross_correlation2d(inputscopy[i], dvalues[i][j], dweights[j]);
+            convolve2d(dvalues[i][j], weights[j], dinputs[i]);
+        }
+    }
+    
+}
 
 class Relu_Activation
 {
 public:
+
     Relu_Activation(int num_samples, int num_neurons);
+    Relu_Activation(int num_samples, int num_neurons, int numdvalrows, int numdvalcols);
     void forward(Mat inputs);
     void backward(Mat dvalues);
 
@@ -104,6 +289,14 @@ Relu_Activation::Relu_Activation(int num_samples, int num_neurons)
     dinputs = mat_alloc(num_samples, num_neurons);
     output = mat_alloc(num_samples, num_neurons);
     layerinputs = mat_alloc(num_samples, num_neurons);
+}
+
+Relu_Activation::Relu_Activation(int num_samples, int num_neurons, int numdvalrows, int numdvalcols)
+{
+    dinputs = mat_alloc(num_samples, num_neurons);
+    output = mat_alloc(num_samples, num_neurons);
+    layerinputs = mat_alloc(num_samples, num_neurons);
+    dinputs = mat_alloc(numdvalrows, numdvalcols);
 }
 
 void Relu_Activation::forward(Mat inputs)
@@ -223,10 +416,10 @@ Activation_softmax::Activation_softmax(int num_samples, int num_classes, int  nu
     singleoutput_T = mat_alloc(num_classes, 1);
     soutdot = mat_alloc(num_classes, num_classes);
    dval_T = mat_alloc(num_classes,1);
-   tempjac = mat_alloc(num_classes, num_classes);
+//    tempjac = mat_alloc(num_classes, num_classes);
    for (size_t i = 0; i < num_samples; i++)
    {
-        jacobians.push_back(tempjac);
+        jacobians.push_back(mat_alloc(num_classes, num_classes));
    }
    
 }
@@ -430,6 +623,7 @@ class Optimizer_SGD
 public:
     Optimizer_SGD(double learning_rate=0.01){  lr = learning_rate;}
     void update_params(LayerDense Layer);
+    void update_convparams(Convolution2D conv);
 
 private:
     double lr;
@@ -443,10 +637,6 @@ void Optimizer_SGD::update_params(LayerDense layer)
         {
             MAT_AT(layer.weights, i, j) -= lr* MAT_AT(layer.dweights, i, j);
         }
-        // if (layer.layerbias)
-        // {
-        //     // MAT_AT(layer.biases, 0, i) -= lr * MAT_AT(layer.dbiases, 0, i);
-        // }
     }
 
     if (layer.layerbias)
@@ -457,4 +647,341 @@ void Optimizer_SGD::update_params(LayerDense layer)
         }
     }
     
+}
+
+void Optimizer_SGD::update_convparams(Convolution2D conv)
+{
+    int k = 0;
+    for (const Mat kernel : conv.weights)
+    {
+        for (int i = 0; i < kernel.rows; i++)
+        {
+            for (int j = 0; j < kernel.cols; j++)
+            {
+                MAT_AT(kernel, i, j) -= lr* MAT_AT(conv.dweights[k], i, j);
+            }
+        }
+        k++;
+    }
+    k = 0;
+    for (const auto lbiases: conv.biases)
+        {
+            for (size_t i = 0; i < lbiases.rows; i++)
+            {
+                for (size_t j = 0; j < lbiases.cols; j++)
+                {
+                    MAT_AT(lbiases, 0, i) -= lr * MAT_AT(conv.dbiases[k], 0, i);
+                }
+                
+            }
+            k++;    
+        
+        }
+    
+}
+
+
+
+
+
+//claude self attention layer
+class SelfAttentionLayer
+{
+public:
+    SelfAttentionLayer(int n_inputs, int d_model, int num_heads, int seq_len, int num_samples);
+    void forward(Mat inputs);
+    void backward(Mat dvalues);
+    
+    Mat output;
+    Mat dinputs;
+    Mat dweights_q;
+    Mat dweights_k; 
+    Mat dweights_v;
+    Mat dweights_o;
+    Mat dbiases_q;
+    Mat dbiases_k;
+    Mat dbiases_v;
+    Mat dbiases_o;
+
+//private:
+    Mat weights_q;
+    Mat weights_k;
+    Mat weights_v;
+    Mat weights_o;
+    Mat biases_q;
+    Mat biases_k;
+    Mat biases_v;
+    Mat biases_o;
+    
+    // Internal computation matrices
+    Mat Q, K, V;
+    Mat attention_scores;
+    Mat attention_weights;
+    Mat attention_output;
+    Mat layerinputs;
+    
+    // Multi-head matrices
+    std::vector<Mat> Q_heads;
+    std::vector<Mat> K_heads;
+    std::vector<Mat> V_heads;
+    std::vector<Mat> attention_heads;
+    std::vector<Mat> score_heads;
+    std::vector<Mat> weight_heads;
+    
+    int d_model;
+    int num_heads;
+    int d_k; // d_model / num_heads
+    int seq_len;
+    int n_samples;
+    bool layerbias;
+    
+private:
+    void compute_attention_head(int head_idx);
+    void softmax_2d(Mat& matrix);
+    void reshape_for_heads();
+    void concatenate_heads();
+};
+
+SelfAttentionLayer::SelfAttentionLayer(int n_inputs, int d_model_size, int num_heads_count, int sequence_len, int num_samples)
+{
+    d_model = d_model_size;
+    num_heads = num_heads_count;
+    d_k = d_model / num_heads;
+    seq_len = sequence_len;
+    n_samples = num_samples;
+    layerbias = true;
+    
+    // Allocate weight matrices
+    weights_q = mat_alloc(n_inputs, d_model);
+    weights_k = mat_alloc(n_inputs, d_model);
+    weights_v = mat_alloc(n_inputs, d_model);
+    weights_o = mat_alloc(d_model, d_model);
+    
+    // Initialize weights randomly
+    mat_rand(weights_q, -0.1, 0.1);
+    mat_rand(weights_k, -0.1, 0.1);
+    mat_rand(weights_v, -0.1, 0.1);
+    mat_rand(weights_o, -0.1, 0.1);
+    
+    // Allocate bias vectors
+    if (layerbias)
+    {
+        biases_q = mat_alloc(1, d_model);
+        biases_k = mat_alloc(1, d_model);
+        biases_v = mat_alloc(1, d_model);
+        biases_o = mat_alloc(1, d_model);
+        
+        // Initialize biases
+        mat_fill(biases_q, 0.0);
+        mat_fill(biases_k, 0.0);
+        mat_fill(biases_v, 0.0);
+        mat_fill(biases_o, 0.0);
+        
+        // Gradient matrices for biases
+        dbiases_q = mat_alloc(1, d_model);
+        dbiases_k = mat_alloc(1, d_model);
+        dbiases_v = mat_alloc(1, d_model);
+        dbiases_o = mat_alloc(1, d_model);
+    }
+    
+    // Allocate gradient matrices for weights
+    dweights_q = mat_alloc(n_inputs, d_model);
+    dweights_k = mat_alloc(n_inputs, d_model);
+    dweights_v = mat_alloc(n_inputs, d_model);
+    dweights_o = mat_alloc(d_model, d_model);
+    
+    // Allocate intermediate computation matrices
+    Q = mat_alloc(n_samples * seq_len, d_model);
+    K = mat_alloc(n_samples * seq_len, d_model);
+    V = mat_alloc(n_samples * seq_len, d_model);
+    attention_scores = mat_alloc(n_samples * seq_len, seq_len);
+    attention_weights = mat_alloc(n_samples * seq_len, seq_len);
+    attention_output = mat_alloc(n_samples * seq_len, d_model);
+    
+    // Allocate input/output matrices
+    layerinputs = mat_alloc(n_samples * seq_len, n_inputs);
+    output = mat_alloc(n_samples * seq_len, d_model);
+    dinputs = mat_alloc(n_samples * seq_len, n_inputs);
+    
+    // Allocate multi-head matrices
+    for (int i = 0; i < num_heads; i++)
+    {
+        Q_heads.push_back(mat_alloc(n_samples * seq_len, d_k));
+        K_heads.push_back(mat_alloc(n_samples * seq_len, d_k));
+        V_heads.push_back(mat_alloc(n_samples * seq_len, d_k));
+        attention_heads.push_back(mat_alloc(n_samples * seq_len, d_k));
+        score_heads.push_back(mat_alloc(n_samples * seq_len, seq_len));
+        weight_heads.push_back(mat_alloc(n_samples * seq_len, seq_len));
+    }
+}
+
+void SelfAttentionLayer::forward(Mat inputs)
+{
+    // Store inputs for backward pass
+    mat_copy(layerinputs, inputs);
+    
+    // Compute Q, K, V projections
+    if (layerbias)
+    {
+        mat_dot_bias(Q, inputs, weights_q, biases_q);
+        mat_dot_bias(K, inputs, weights_k, biases_k);
+        mat_dot_bias(V, inputs, weights_v, biases_v);
+    }
+    else
+    {
+        mat_dot(Q, inputs, weights_q);
+        mat_dot(K, inputs, weights_k);
+        mat_dot(V, inputs, weights_v);
+    }
+    // Reshape Q, K, V for multi-head attention
+    reshape_for_heads();
+    
+    // Compute attention for each head
+    for (int h = 0; h < num_heads; h++)
+    {
+        compute_attention_head(h);
+    }
+    
+    // // Concatenate heads
+    // concatenate_heads();
+    
+    // Apply output projection
+    // if (layerbias)
+    // {
+    //     mat_dot_bias(output, attention_output, weights_o, biases_o);
+    // }
+    // else
+    // {
+    //     mat_dot(output, attention_output, weights_o);
+    // }
+}
+
+void SelfAttentionLayer::compute_attention_head(int head_idx)
+{
+    // Compute attention scores: Q * K^T
+    Mat K_head_T = mat_alloc(d_k, n_samples * seq_len);
+    mat_transpose(K_head_T, K_heads[head_idx]);
+    mat_dot(score_heads[head_idx], Q_heads[head_idx], K_head_T);
+    
+    // Scale by sqrt(d_k)
+    double scale_factor = 1.0 / std::sqrt((double)d_k);
+    for (size_t i = 0; i < score_heads[head_idx].rows; i++)
+    {
+        for (size_t j = 0; j < score_heads[head_idx].cols; j++)
+        {
+            MAT_AT(score_heads[head_idx], i, j) *= scale_factor;
+        }
+    }
+    
+    // Apply softmax to get attention weights
+    mat_copy(weight_heads[head_idx], score_heads[head_idx]);
+    softmax_2d(weight_heads[head_idx]);
+    
+    // Apply attention weights to values: Attention * V
+    mat_dot(attention_heads[head_idx], weight_heads[head_idx], V_heads[head_idx]);
+    
+    mat_free(K_head_T);
+}
+
+void SelfAttentionLayer::softmax_2d(Mat& matrix)
+{
+    // Apply softmax to each row (each sequence position attends to all positions)
+    for (size_t i = 0; i < matrix.rows; i++)
+    {
+        // Find max for numerical stability
+        double max_val = MAT_AT(matrix, i, 0);
+        for (size_t j = 1; j < matrix.cols; j++)
+        {
+            if (MAT_AT(matrix, i, j) > max_val)
+            {
+                max_val = MAT_AT(matrix, i, j);
+            }
+        }
+        
+        // Compute exp and sum
+        double sum = 0.0;
+        for (size_t j = 0; j < matrix.cols; j++)
+        {
+            MAT_AT(matrix, i, j) = std::exp(MAT_AT(matrix, i, j) - max_val);
+            sum += MAT_AT(matrix, i, j);
+        }
+        
+        // Normalize
+        for (size_t j = 0; j < matrix.cols; j++)
+        {
+            MAT_AT(matrix, i, j) /= sum;
+        }
+    }
+}
+
+void SelfAttentionLayer::reshape_for_heads()
+{
+    // Split Q, K, V into multiple heads
+    for (int h = 0; h < num_heads; h++)
+    {
+        for (size_t i = 0; i < Q.rows; i++)
+        {
+            for (int j = 0; j < d_k; j++)
+            {
+                MAT_AT(Q_heads[h], i, j) = MAT_AT(Q, i, h * d_k + j);
+                MAT_AT(K_heads[h], i, j) = MAT_AT(K, i, h * d_k + j);
+                MAT_AT(V_heads[h], i, j) = MAT_AT(V, i, h * d_k + j);
+            }
+        }
+    }
+}
+
+void SelfAttentionLayer::concatenate_heads()
+{
+    // Concatenate attention heads back together
+    for (int h = 0; h < num_heads; h++)
+    {
+        for (size_t i = 0; i < attention_heads[h].rows; i++)
+        {
+            for (int j = 0; j < d_k; j++)
+            {
+                MAT_AT(attention_output, i, h * d_k + j) = MAT_AT(attention_heads[h], i, j);
+            }
+        }
+    }
+}
+
+void SelfAttentionLayer::backward(Mat dvalues)
+{
+    // This is a simplified backward pass - full implementation would require
+    // computing gradients through the attention mechanism
+    
+    // Gradient w.r.t. output projection
+    Mat layerinputs_T = mat_alloc(layerinputs.cols, layerinputs.rows);
+    mat_transpose(layerinputs_T, layerinputs);
+    
+    // Compute weight gradients (simplified - should use attention_output)
+    mat_dot(dweights_o, layerinputs_T, dvalues);
+    
+    // Compute bias gradients
+    if (layerbias)
+    {
+        for (size_t j = 0; j < dbiases_o.cols; j++)
+        {
+            MAT_AT(dbiases_o, 0, j) = 0.0;
+            for (size_t i = 0; i < dvalues.rows; i++)
+            {
+                MAT_AT(dbiases_o, 0, j) += MAT_AT(dvalues, i, j);
+            }
+        }
+    }
+    
+    // Gradient w.r.t. inputs (simplified)
+    Mat weights_o_T = mat_alloc(weights_o.cols, weights_o.rows);
+    mat_transpose(weights_o_T, weights_o);
+    mat_dot(dinputs, dvalues, weights_o_T);
+    
+    // Note: Full backward pass would require:
+    // 1. Backprop through attention weights (softmax gradient)
+    // 2. Backprop through scaled dot-product attention
+    // 3. Backprop through Q, K, V projections
+    // This is simplified for brevity
+    
+    mat_free(layerinputs_T);
+    mat_free(weights_o_T);
 }

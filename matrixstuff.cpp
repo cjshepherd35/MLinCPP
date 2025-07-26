@@ -33,6 +33,7 @@ void mat_dot_bias(Mat dst, Mat a, Mat b, Mat bias);
 void mat_sum(Mat dst, Mat a);
 void mat_sig( Mat m);
 void mat_print(Mat m);
+void mat_free(Mat m);
 
 double rand_double()
 {
@@ -199,4 +200,10 @@ void mat_print(Mat m)
         }
         printf("\n");
     }
+}
+
+
+void mat_free(Mat m)
+{
+    free(m.es);
 }
