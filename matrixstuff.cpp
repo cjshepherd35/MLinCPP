@@ -14,6 +14,7 @@ struct Mat
     double* es;
 };
 
+
 #define MAT_AT(m, i, j) m.es[i*(m).stride+j]
 
 
@@ -31,6 +32,7 @@ void mat_fill(Mat m, float x);
 void mat_dot(Mat dst, Mat a, Mat b);
 void mat_dot_bias(Mat dst, Mat a, Mat b, Mat bias);
 void mat_sum(Mat dst, Mat a);
+void mat_scalertimes(Mat dst, Mat a, float scale);
 void mat_sig( Mat m);
 void mat_print(Mat m);
 void mat_free(Mat m);
@@ -124,6 +126,20 @@ void mat_dot_bias(Mat dst, Mat a, Mat b, Mat bias)
 
 }
 
+
+void mat_scalertimes(Mat dst, Mat a, float scale)
+{
+    for (size_t i = 0; i < a.rows; i++)
+    {
+        for (size_t j = 0; j < a.cols; j++)
+        {
+            MAT_AT(a,i,j) = MAT_AT(a,i,j) *scale;
+        }
+        
+    }
+    
+}
+
 Mat mat_row(Mat m, size_t row)
 {
     return (Mat) { 
@@ -207,3 +223,4 @@ void mat_free(Mat m)
 {
     free(m.es);
 }
+
