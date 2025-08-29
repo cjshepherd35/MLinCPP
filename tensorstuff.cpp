@@ -75,3 +75,13 @@ void bmm(Tensor dst, Tensor a, Tensor b)
         mat_dot(dst.mats[i], a.mats[i], b.mats[i]);
     }
 }
+
+
+void tensor_print(Tensor t)
+{
+    for (size_t i = 0; i < t.depth; i++)
+    {
+        mat_print(t.mats[i]);
+    }
+    
+}

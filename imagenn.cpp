@@ -138,7 +138,7 @@ Mat randomizeLabels(std::vector<std::vector<int>> labels, std::vector<int> randv
 
 int main()
 {
-    srand(69);
+    srand(37);
     std::vector<std::vector<float>> images = read_images(imagesfilename);
     std::vector<std::vector<int>> labels = read_labels(labelsfilename);
     
@@ -152,7 +152,7 @@ int main()
     Relu_Activation relu2(num_samples, n_neurons, num_samples, n_neurons);
     LayerDense ld3(n_neurons, num_classes, true, num_samples);
     
-    Activation_softmax soft(num_samples, num_classes, n_neurons);
+    Activation_softmax soft(num_samples, num_classes);
     Loss_categoricalCrossentropy loss(num_classes, num_samples);
     
     Optimizer_SGD opt(lr);
@@ -168,6 +168,7 @@ int main()
         relu2.forward(ld2.output);
         ld3.forward(relu2.output);
         soft.forward(ld3.output);
+        // std::cout << "shape " << ld3.output.rows << ", " << ld3.output.cols << std::endl;
         loss.forward(soft.output, trainlabels);
         
         

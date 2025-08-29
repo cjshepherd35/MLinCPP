@@ -33,6 +33,7 @@ void mat_dot(Mat dst, Mat a, Mat b);
 void mat_dot_bias(Mat dst, Mat a, Mat b, Mat bias);
 void mat_sum(Mat dst, Mat a);
 void mat_scalertimes(Mat dst, Mat a, float scale);
+void mat_transpose(Mat transpose, Mat original);
 void mat_sig( Mat m);
 void mat_print(Mat m);
 void mat_free(Mat m);

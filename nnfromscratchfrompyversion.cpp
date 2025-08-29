@@ -569,10 +569,6 @@ ASLCC::ASLCC()
 }
 
 
-
-
-
-
 class BinaryCrossentropy_Loss
 {
 public:
@@ -612,12 +608,223 @@ void BinaryCrossentropy_Loss::backward(Mat dvalues, Mat y_true)
     
 }
 
+
+class AttentionHead
+{
+public:
+    AttentionHead(int num_embed, int batch_size, int seq_len, int head_dim);
+    void forward(const Tensor& x);
+    void backward(const Tensor& dvalues);
+
+    Tensor output;
+    Mat w_q;
+    Mat w_k;
+    Mat w_v;
+
+    Tensor d_x;
+    Mat d_w_q;
+    Mat d_w_k;
+    Mat d_w_v;
+private:
+    int num_embed;
+    int head_dim;
+
+    Mat v_T;
+    Mat att_weight_T;
+    Mat d_attention_weights;
+    Mat d_v;
+
+    std::map<std::string, Tensor> cache;
+    Activation_softmax soft;
+    
+};
+
+AttentionHead::AttentionHead(int num_embed, int batch_size, int seq_len, int head_dim) 
+    : num_embed(num_embed), head_dim(head_dim), soft(seq_len, seq_len)
+{
+    w_q = mat_alloc(num_embed, head_dim);
+    w_k = mat_alloc(num_embed, head_dim);
+    w_v = mat_alloc(num_embed, head_dim);
+
+    mat_rand(w_q, -0.5, 0.5);
+
+    //size batch_size, seq_len, head_dim
+    cache["q"] = tensor_alloc(batch_size,  seq_len, head_dim);
+    cache["k"] = tensor_alloc(batch_size,  seq_len, head_dim);
+    cache["v"] = tensor_alloc(batch_size,  seq_len, head_dim);
+    //size batch_size, seq_len, seq_len
+    cache["attention_weights"] = tensor_alloc(batch_size,  seq_len, seq_len);
+    Activation_softmax soft(seq_len, seq_len);
+    output = tensor_alloc(batch_size, seq_len, head_dim);
+
+    //for backward pass
+    d_x = tensor_alloc(batch_size, seq_len, num_embed);
+    d_w_k = mat_alloc(num_embed, head_dim);
+    d_w_q = mat_alloc(num_embed, head_dim);
+    d_w_v = mat_alloc(num_embed, head_dim);
+
+    d_attention_weights = mat_alloc(seq_len, seq_len);
+    v_T = mat_alloc(head_dim, seq_len);
+    att_weight_T = mat_alloc(seq_len, seq_len);
+    d_v = mat_alloc(seq_len, head_dim);
+
+   
+
+}
+
+
+void AttentionHead::forward(const Tensor& x)
+{
+    size_t batch_size = x.depth;
+    int seq_len = x.rows;
+
+    cache["x"] = x;
+
+    for (size_t b = 0; b < batch_size; b++)
+    {
+        mat_dot(cache["q"].mats[b], x.mats[b], w_q);
+        mat_dot(cache["k"].mats[b], x.mats[b], w_k);
+        mat_dot(cache["v"].mats[b], x.mats[b], w_v);
+
+
+        Mat scores = mat_alloc(seq_len, seq_len);
+        Mat kt = mat_alloc(cache["k"].cols,cache["k"].rows);
+        mat_dot(scores, cache["q"].mats[b], kt);
+        mat_scalertimes(scores, scores, (1/std::sqrt(static_cast<double>(head_dim))));
+
+        //next apply softmax to scores to get attention weights.
+        soft.forward(scores);
+        cache["attention_weights"].mats[b] = soft.output;
+
+        mat_dot(output.mats[b], cache["attention_weights"].mats[b], cache["v"].mats[b]);
+
+
+        mat_free(scores);
+        mat_free(kt);
+    }
+    
+
+
+}
+
+// in future update, make tensor a class and change multipl. transpose and handle memory management in destructor, also copy assignment etc. 
+void AttentionHead::backward(const Tensor& dvalues)
+{
+    const Tensor& x  = cache["x"];
+    const Tensor& q = cache["q"];
+    const Tensor& k = cache["k"];
+    const Tensor& v = cache["v"];
+    const Tensor& att_weights = cache["attention_weights"];
+
+    size_t batch_size = x.depth;
+    mat_fill(d_w_q, 0);
+    mat_fill(d_w_k, 0);
+    mat_fill(d_w_v, 0);
+
+    for (size_t b = 0; b < batch_size; b++)
+    {
+        int awrows = att_weights.mats[b].rows;
+        int awcols = att_weights.mats[b].cols;
+        Mat d_q = mat_alloc(q.rows, q.cols);
+        Mat d_k = mat_alloc(k.rows, k.cols);
+        
+        //4. gradient of weighted sum of values
+        mat_transpose(v_T, v.mats[b]);
+        mat_dot(d_attention_weights, dvalues.mats[b],v_T);
+        mat_transpose(att_weight_T, att_weights.mats[b]);
+        mat_dot(d_v, att_weight_T, dvalues.mats[b]);
+        soft.backward(att_weights.mats[b]);
+        //3. gradient of the softmax func
+        // Mat dscores = mat_alloc(att_weights.mats[b].rows, att_weights.mats[b].cols);
+        // Mat dsc_T = mat_alloc(dscores.cols, dscores.rows);
+        // mat_fill(dscores, 0);
+        // for (size_t i = 0; i < att_weights.mats[b].rows; i++)
+        // {
+        //     const Mat att_row = mat_row(att_weights.mats[b], i);
+        //     const Mat d_attn_row = mat_row(d_attention_weights, i);
+
+        //     double sum_grad = 0;
+        //     for (size_t j = 0; j < att_row.cols; j++)
+        //     {
+        //         sum_grad += MAT_AT(att_row, 0,j) * MAT_AT(d_attn_row, 0, j);
+                
+        //     }
+        //     for (size_t l = 0; l < att_row.cols; l++)
+        //     {
+        //         MAT_AT(dscores, i,l) = MAT_AT(att_row,0,l) * (MAT_AT(d_attn_row,0,l) -sum_grad);
+        //     }  
+        // }
+        Mat dsc_T = mat_alloc(soft.dinputs.cols, soft.dinputs.rows);
+        mat_transpose(dsc_T, soft.dinputs);
+        //2. gradient of attention scores
+        for (size_t j = 0; j < soft.dinputs.rows; j++)
+        {
+            for (size_t k = 0; k < soft.dinputs.cols; k++)
+            {
+                MAT_AT(soft.dinputs, j, k) = MAT_AT(soft.dinputs, j,k) / std::sqrt(static_cast<double>(head_dim));
+                
+            }
+        }
+        mat_dot(d_q, soft.dinputs, k.mats[b]);
+        mat_dot(d_k, dsc_T, q.mats[b]);
+
+
+        //1. gradient of input projections
+        Mat xb_T = mat_alloc(x.mats[b].cols, x.mats[b].rows);
+        Mat tempd = mat_alloc(xb_T.rows, d_q.cols); //just chose d_w_q because its first, will fit any d_wq, d_wk,d_wv
+        mat_dot(tempd, xb_T, d_q);
+        mat_sum(d_w_q, tempd);
+
+        mat_fill(tempd, 0);
+        mat_dot(tempd, xb_T, d_k);
+        mat_sum(d_w_k, tempd);
+
+        mat_fill(tempd, 0);
+        mat_dot(tempd, xb_T, d_v);
+        mat_sum(d_w_v, tempd);
+
+
+        //gradient wrt input x
+        Mat weights_t = mat_alloc(w_q.cols, w_q.rows);   //once again just chose one of the three options wq, wk, wv
+        Mat tempw = mat_alloc(d_q.rows, weights_t.cols);
+        mat_transpose(weights_t, w_q);
+        
+        mat_dot(tempw, d_q, weights_t);
+        mat_sum(d_x.mats[b], tempw);
+        mat_fill(tempw, 0);
+        
+        mat_transpose(weights_t, w_k);
+        mat_dot(tempw, d_k, weights_t);
+        mat_sum(d_x.mats[b], tempw);
+        mat_fill(tempw, 0);
+
+        mat_transpose(weights_t, w_v);
+        mat_dot(tempw, d_v, weights_t);
+        mat_sum(d_x.mats[b], tempw);
+
+
+        //free all temporary mats
+        mat_free(d_k);
+        mat_free(d_q);
+        // mat_free(dscores);
+        mat_free(dsc_T);
+        mat_free(xb_T);
+        mat_free(tempd);
+        mat_free(weights_t);
+        mat_free(tempw);
+    }
+    
+
+}
+
+
 class Optimizer_SGD
 {
 public:
     Optimizer_SGD(double learning_rate=0.01){  lr = learning_rate;}
     void update_params(LayerDense Layer);
-    void update_convparams(Convolution2D conv);
+    void update_params(Convolution2D conv);
+    void update_params(AttentionHead layer);
     void update_randomly(LayerDense layer, float L);
 
 private:
@@ -644,7 +851,7 @@ void Optimizer_SGD::update_params(LayerDense layer)
     
 }
 
-void Optimizer_SGD::update_convparams(Convolution2D conv)
+void Optimizer_SGD::update_params(Convolution2D conv)
 {
     int k = 0;
     for (const Mat kernel : conv.weights)
@@ -674,6 +881,35 @@ void Optimizer_SGD::update_convparams(Convolution2D conv)
         }
     
 }
+
+
+void Optimizer_SGD::update_params(AttentionHead layer)
+{
+    for (size_t i = 0; i < layer.w_k.rows; i++)
+    {
+        for (size_t j = 0; j < layer.w_k.cols; j++)
+        {
+            MAT_AT(layer.w_k, i,j) -= lr * MAT_AT(layer.d_w_k, i, j); 
+        }
+    }
+    for (size_t i = 0; i < layer.w_q.rows; i++)
+    {
+        for (size_t j = 0; j < layer.w_q.cols; j++)
+        {
+            MAT_AT(layer.w_q, i,j) -= lr * MAT_AT(layer.d_w_q, i, j); 
+        }
+    }
+    for (size_t i = 0; i < layer.w_v.rows; i++)
+    {
+        for (size_t j = 0; j < layer.w_v.cols; j++)
+        {
+            MAT_AT(layer.w_v, i,j) -= lr * MAT_AT(layer.d_w_v, i, j); 
+        }
+    }
+    
+}
+
+
 
 void Optimizer_SGD::update_randomly(LayerDense layer, float L)
 {
@@ -706,86 +942,3 @@ void Optimizer_SGD::update_randomly(LayerDense layer, float L)
 
 
 
-
-
-class AttentionHead
-{
-public:
-    AttentionHead(int num_embed, int batch_size, int seq_len, int head_dim);
-    void forward(const Tensor& x);
-    void backward(const Tensor& dvalues);
-
-private:
-    int num_embed;
-    int head_dim;
-
-    Mat w_q;
-    Mat w_k;
-    Mat w_v;
-    std::map<std::string, Tensor> cache;
-    Activation_softmax soft;
-    Tensor output;
-};
-
-
-AttentionHead::AttentionHead(int num_embed, int batch_size, int seq_len, int head_dim) 
-    : num_embed(num_embed), head_dim(head_dim), soft(seq_len, seq_len)
-{
-    w_q = mat_alloc(num_embed, head_dim);
-    w_k = mat_alloc(num_embed, head_dim);
-    w_v = mat_alloc(num_embed, head_dim);
-
-    mat_rand(w_q, -0.5, 0.5);
-
-    //size batch_size, seq_len, head_dim
-    cache["q"] = tensor_alloc(batch_size,  seq_len, head_dim);
-    cache["k"] = tensor_alloc(batch_size,  seq_len, head_dim);
-    cache["v"] = tensor_alloc(batch_size,  seq_len, head_dim);
-    //size batch_size, seq_len, seq_len
-    cache["attention_weights"] = tensor_alloc(batch_size,  seq_len, seq_len);
-    Activation_softmax soft(seq_len, seq_len);
-    output = tensor_alloc(batch_size, seq_len, head_dim);
-}
-
-
-void AttentionHead::forward(const Tensor& x)
-{
-    size_t batch_size = x.depth;
-    int seq_len = x.rows;
-
-    cache["x"] = x;
-    
-
-
-    for (size_t b = 0; b < batch_size; b++)
-    {
-        mat_dot(cache["q"].mats[b], x.mats[b], w_q);
-        mat_dot(cache["k"].mats[b], x.mats[b], w_k);
-        mat_dot(cache["v"].mats[b], x.mats[b], w_v);
-
-
-        Mat scores = mat_alloc(seq_len, seq_len);
-        Mat kt = mat_alloc(cache["k"].cols,cache["k"].rows);
-        mat_dot(scores, cache["q"].mats[b], kt);
-        mat_scalertimes(scores, scores, (1/std::sqrt(static_cast<double>(head_dim))));
-
-        //next apply softmax to scores to get attention weights.
-        soft.forward(scores);
-        cache["attention_weights"].mats[b] = soft.output;
-
-        mat_dot(output.mats[b], cache["attention_weights"].mats[b], cache["v"].mats[b]);
-
-
-        mat_free(scores);
-        mat_free(kt);
-    }
-    
-
-
-}
-
-
-void AttentionHead::backward(const Tensor& dvalues)
-{
-    
-}
