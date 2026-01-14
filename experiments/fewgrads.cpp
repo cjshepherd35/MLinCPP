@@ -1,8 +1,10 @@
+//only update a few weights in each layer and see if we still get the same learning. must make all gradients to pass back, will see later if we can skip some grads. 
+#include <iostream>
 #include <fstream>
 #include <time.h>
 #include <random>
 #include <chrono>
-#include "nnfromscratchfrompyversion.cpp"
+#include "../nnfromscratchfrompyversion.cpp"
 
 
 std::string labelsfilename = "C:/Users/cshep/Downloads/t10k-labels.idx1-ubyte";
@@ -10,12 +12,13 @@ std::string imagesfilename = "C:/Users/cshep/Downloads/t10k-images.idx3-ubyte/t1
 
 
 int num_samples = 10;
-double lr = 0.01;
+double lr = 0.1;
 int n_inputs = 28*28;
-int  n_neurons = 256;
+int  n_neurons = 128;
 int num_classes = 10;
 int num_iters = 501;
-int check_iter = 100;
+int check_iter = 50;
+double percchangeableweights = 0.5;
 
 //reading mnist images
 std::vector<std::vector<float>> read_images(const std::string& fileName)
@@ -137,6 +140,62 @@ Mat randomizeLabels(std::vector<std::vector<int>> labels, std::vector<int> randv
     return trainlabels;
 }
 
+class Fewopt
+{
+public:
+    Fewopt(std::vector<std::vector<std::tuple<int, int>>> randgrads, double learningrate=0.01){lr = learningrate; selectgrads = randgrads;}
+    void update_params(LayerDense layer, int i);
+    void update_params(Subsetlayer layer, int i);
+
+
+private:
+    double lr;
+    std::vector<std::vector<std::tuple<int, int>>> selectgrads;
+};
+
+
+void Fewopt::update_params(LayerDense layer, int i)
+{
+    for(const auto& [row, col] : selectgrads[i])
+    {
+        MAT_AT(layer.weights, row, col) -= lr * MAT_AT(layer.dweights, row, col);
+    }
+    
+}
+void Fewopt::update_params(Subsetlayer layer, int i)
+{
+    for(const auto& [row, col] : selectgrads[i])
+    {
+        MAT_AT(layer.weights, row, col) -= lr * MAT_AT(layer.dweights, row, col);
+    }
+    
+}
+
+//need to create this......................!!!!!!!!!!
+std::vector<std::tuple<int, int>> getrandweightlabels(double perc, int num_inputs, int num_out)
+{
+    std::vector<std::tuple<int, int>> randvecs;
+    int numweightschange = int(perc * (double)num_inputs * (double)num_out);
+    for (size_t i = 0; i < numweightschange; i++)
+    {
+        int row = rand() % num_inputs;
+        int col = rand() % num_out;
+        randvecs.emplace_back(row, col);
+    }
+    //when using in video, add this later to show speed up...
+    //..................
+    std::sort(randvecs.begin(), randvecs.end(),
+        [](const auto& a, const auto& b) {
+            // Compare the first element (index 0) of the two tuples
+            return std::get<0>(a) < std::get<0>(b);
+        }
+    );
+    //..................
+
+    return randvecs;
+}
+
+
 int main()
 {
     srand(37);
@@ -145,9 +204,21 @@ int main()
     
     Mat trainimages = mat_alloc(num_samples, n_inputs);
     Mat trainlabels = mat_alloc(num_samples, num_classes);
+    std::vector<std::tuple<int, int>> randweilabels1;
+    std::vector<std::tuple<int, int>> randweilabels2;
+    std::vector<std::tuple<int, int>> randweilabels3;
+    
    
+    randweilabels1 = getrandweightlabels(percchangeableweights, n_inputs, n_neurons);
+    randweilabels2 = getrandweightlabels(percchangeableweights, n_neurons, n_neurons);
+    randweilabels3 = getrandweightlabels(percchangeableweights, n_neurons, num_classes);
+   
+     std::vector<std::vector<std::tuple<int, int>>> randweilabels;
+    randweilabels.push_back(randweilabels1);
+    randweilabels.push_back(randweilabels2);
+    randweilabels.push_back(randweilabels3);
 
-    LayerDense ld1(n_inputs, n_neurons, false, num_samples);
+    Subsetlayer ld1(n_inputs, n_neurons, false, num_samples, randweilabels[0]);
     Relu_Activation relu(num_samples, n_neurons);
     LayerDense ld2(n_neurons, n_neurons, false, num_samples);
     Relu_Activation relu2(num_samples, n_neurons);
@@ -155,8 +226,10 @@ int main()
     
     Activation_softmax soft(num_samples, num_classes);
     Loss_categoricalCrossentropy loss(num_classes, num_samples);
+
+   
     
-    Optimizer_SGD opt(lr);
+    Fewopt opt(randweilabels, lr);
     std::vector<int> randvec;
     auto start = std::chrono::high_resolution_clock::now();
     for (size_t j = 0; j < num_iters; ++j)
@@ -199,14 +272,35 @@ int main()
         relu.backward(ld2.dinputs);
         ld1.backward(relu.dinputs);
 
-        opt.update_params(ld3);
-        opt.update_params(ld2);
-        opt.update_params(ld1);
+
+
+        opt.update_params(ld3, 2);
+        opt.update_params(ld2, 1);
+        opt.update_params(ld1, 0);
+        //replace these.......
+
+        // opt.update_params(ld3);
+        // opt.update_params(ld2);
+        // opt.update_params(ld1);
     }
     auto stop = std::chrono::high_resolution_clock::now();
     auto duration = stop - start;
 
     std::cout << "time " << duration.count()/1000000 << std::endl;
     
+    randvec = getrandvec(num_samples);
+    trainimages = randomizeImages(images, randvec);
+    trainlabels = randomizeLabels(labels, randvec);
+    
+    ld1.forward(trainimages);
+    relu.forward(ld1.output);
+    ld2.forward(relu.output);
+    relu2.forward(ld2.output);
+    ld3.forward(relu2.output);
+    soft.forward(ld3.output);
+    std::cout << "preds\n";
+    mat_print(soft.output);
+    std::cout << "yvals\n";
+    mat_print(trainlabels);
     return 0;
 }

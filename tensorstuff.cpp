@@ -17,6 +17,7 @@ void tensor_rand(Tensor t, float low, float high);
 void tensor_print(Tensor t);
 void bmm(Tensor dst, Tensor a, Mat b);
 void bmm(Tensor dst, Tensor a, Tensor b);
+void tensor_free(Tensor& t);
 
 
 Tensor tensor_alloc(size_t depth, size_t rows, size_t cols)
@@ -52,9 +53,6 @@ void tensor_rand(Tensor t, float low, float high)
 
 }
 
-
-
-
 void bmm(Tensor dst, Tensor a, Mat b)
 {
     assert(dst.depth == a.depth);
@@ -66,16 +64,6 @@ void bmm(Tensor dst, Tensor a, Mat b)
     
 }
 
-void bmm(Tensor dst, Tensor a, Tensor b)
-{
-    assert(dst.depth == a.depth);
-    
-    for (size_t i = 0; i < dst.depth; i++)
-    {
-        mat_dot(dst.mats[i], a.mats[i], b.mats[i]);
-    }
-}
-
 
 void tensor_print(Tensor t)
 {
@@ -84,4 +72,18 @@ void tensor_print(Tensor t)
         mat_print(t.mats[i]);
     }
     
+}
+
+
+void tensor_free(Tensor& t)
+{
+    for( Mat& m : t.mats)
+    {
+        mat_free(m);
+    }
+    t.mats.clear();
+    t.depth = 0;
+    t.rows = 0;
+    t.cols = 0;
+    t.stride = 0;
 }

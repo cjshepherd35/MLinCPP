@@ -1,7 +1,7 @@
+//does not work. 
 #include <fstream>
 #include <time.h>
 #include <random>
-#include <chrono>
 #include "nnfromscratchfrompyversion.cpp"
 
 
@@ -14,8 +14,9 @@ double lr = 0.01;
 int n_inputs = 28*28;
 int  n_neurons = 256;
 int num_classes = 10;
-int num_iters = 501;
-int check_iter = 100;
+int num_iters = 2001;
+int check_iter = 50;
+float percmaskisone = 0.85;
 
 //reading mnist images
 std::vector<std::vector<float>> read_images(const std::string& fileName)
@@ -146,32 +147,34 @@ int main()
     Mat trainimages = mat_alloc(num_samples, n_inputs);
     Mat trainlabels = mat_alloc(num_samples, num_classes);
    
+    //this is main part!!!!!!!!!!!!!!!!!!!!!!!
+    Mat randmask1 = mat_alloc(n_inputs, n_neurons);
+    Mat randmask2 = mat_alloc(n_neurons, n_neurons);
+    Mat randmask3 = mat_alloc(n_neurons, num_classes);
 
-    LayerDense ld1(n_inputs, n_neurons, false, num_samples);
+    
+    LayerDense ld1(n_inputs, n_neurons, true, num_samples);
     Relu_Activation relu(num_samples, n_neurons);
-    LayerDense ld2(n_neurons, n_neurons, false, num_samples);
-    Relu_Activation relu2(num_samples, n_neurons);
-    LayerDense ld3(n_neurons, num_classes, false, num_samples);
+    LayerDense ld2(n_neurons, n_neurons, true, num_samples);
+    Relu_Activation relu2(num_samples, n_neurons, num_samples, n_neurons);
+    LayerDense ld3(n_neurons, num_classes, true, num_samples);
     
     Activation_softmax soft(num_samples, num_classes);
     Loss_categoricalCrossentropy loss(num_classes, num_samples);
     
     Optimizer_SGD opt(lr);
     std::vector<int> randvec;
-    auto start = std::chrono::high_resolution_clock::now();
     for (size_t j = 0; j < num_iters; ++j)
     {
         randvec = getrandvec(num_samples);
         trainimages = randomizeImages(images, randvec);
         trainlabels = randomizeLabels(labels, randvec);
-        
         ld1.forward(trainimages);
         relu.forward(ld1.output);
         ld2.forward(relu.output);
         relu2.forward(ld2.output);
         ld3.forward(relu2.output);
         soft.forward(ld3.output);
-        // mat_print(soft.output);
         // std::cout << "shape " << ld3.output.rows << ", " << ld3.output.cols << std::endl;
         loss.forward(soft.output, trainlabels);
         
@@ -199,14 +202,24 @@ int main()
         relu.backward(ld2.dinputs);
         ld1.backward(relu.dinputs);
 
+        //this is what this one is all about!!!!!!!!!!!!
+        mat_fill(randmask1, 0);
+        mat_fill(randmask2, 0);
+        mat_fill(randmask3, 0);
+
+        mat_random_mask(randmask1, percmaskisone);
+        mat_random_mask(randmask2, percmaskisone);
+        mat_random_mask(randmask3, percmaskisone);
+
+        mat_elemwise_mult(ld1.dweights, randmask1, ld1.dweights);
+        mat_elemwise_mult(ld2.dweights, randmask2, ld2.dweights);
+        mat_elemwise_mult(ld3.dweights, randmask3, ld3.dweights);
+        // to here!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
         opt.update_params(ld3);
         opt.update_params(ld2);
         opt.update_params(ld1);
     }
-    auto stop = std::chrono::high_resolution_clock::now();
-    auto duration = stop - start;
-
-    std::cout << "time " << duration.count()/1000000 << std::endl;
     
     return 0;
 }

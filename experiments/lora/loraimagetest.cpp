@@ -1,8 +1,9 @@
+#include <iostream>
 #include <fstream>
 #include <time.h>
 #include <random>
 #include <chrono>
-#include "nnfromscratchfrompyversion.cpp"
+#include "../../nnfromscratchfrompyversion.cpp"
 
 
 std::string labelsfilename = "C:/Users/cshep/Downloads/t10k-labels.idx1-ubyte";
@@ -12,10 +13,11 @@ std::string imagesfilename = "C:/Users/cshep/Downloads/t10k-images.idx3-ubyte/t1
 int num_samples = 10;
 double lr = 0.01;
 int n_inputs = 28*28;
-int  n_neurons = 256;
+int  n_neurons = 128;
 int num_classes = 10;
 int num_iters = 501;
-int check_iter = 100;
+int check_iter = 50;
+int rank{6};
 
 //reading mnist images
 std::vector<std::vector<float>> read_images(const std::string& fileName)
@@ -139,7 +141,7 @@ Mat randomizeLabels(std::vector<std::vector<int>> labels, std::vector<int> randv
 
 int main()
 {
-    srand(37);
+    srand(69);
     std::vector<std::vector<float>> images = read_images(imagesfilename);
     std::vector<std::vector<int>> labels = read_labels(labelsfilename);
     
@@ -147,7 +149,7 @@ int main()
     Mat trainlabels = mat_alloc(num_samples, num_classes);
    
 
-    LayerDense ld1(n_inputs, n_neurons, false, num_samples);
+    Lora ld1(n_inputs, n_neurons, false, num_samples, rank);
     Relu_Activation relu(num_samples, n_neurons);
     LayerDense ld2(n_neurons, n_neurons, false, num_samples);
     Relu_Activation relu2(num_samples, n_neurons);

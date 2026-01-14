@@ -1,7 +1,11 @@
+//start with copy of imagenn.cpp and will next adjust the neural network to include square dense and cube dense, remember  to keep the number of
+// weights per layer =< the weights of the comparative imagenn we will test against.
+
+//has gradient explosion, need to fix that. Need to build in layer norm
+//probably just a no go using just squares. all outputs will be positive, duh. 
 #include <fstream>
 #include <time.h>
 #include <random>
-#include <chrono>
 #include "nnfromscratchfrompyversion.cpp"
 
 
@@ -12,10 +16,10 @@ std::string imagesfilename = "C:/Users/cshep/Downloads/t10k-images.idx3-ubyte/t1
 int num_samples = 10;
 double lr = 0.01;
 int n_inputs = 28*28;
-int  n_neurons = 256;
+int  n_neurons = 32;
 int num_classes = 10;
-int num_iters = 501;
-int check_iter = 100;
+int num_iters = 10;
+int check_iter = 1;
 
 //reading mnist images
 std::vector<std::vector<float>> read_images(const std::string& fileName)
@@ -137,6 +141,9 @@ Mat randomizeLabels(std::vector<std::vector<int>> labels, std::vector<int> randv
     return trainlabels;
 }
 
+
+
+
 int main()
 {
     srand(37);
@@ -145,33 +152,41 @@ int main()
     
     Mat trainimages = mat_alloc(num_samples, n_inputs);
     Mat trainlabels = mat_alloc(num_samples, num_classes);
+    Mat ldandsqd = mat_alloc(num_samples,n_neurons);
    
 
-    LayerDense ld1(n_inputs, n_neurons, false, num_samples);
+    LayerDense ld1(n_inputs, n_neurons, true, num_samples);
+    SqLayerDense sqd1(n_inputs, n_neurons, true, num_samples);
     Relu_Activation relu(num_samples, n_neurons);
-    LayerDense ld2(n_neurons, n_neurons, false, num_samples);
-    Relu_Activation relu2(num_samples, n_neurons);
-    LayerDense ld3(n_neurons, num_classes, false, num_samples);
+    LayerDense ld2(n_neurons, n_neurons, true, num_samples);
+    Relu_Activation relu2(num_samples, n_neurons, num_samples, n_neurons);
+    LayerDense ld3(n_neurons, num_classes, true, num_samples);
     
     Activation_softmax soft(num_samples, num_classes);
     Loss_categoricalCrossentropy loss(num_classes, num_samples);
     
     Optimizer_SGD opt(lr);
     std::vector<int> randvec;
-    auto start = std::chrono::high_resolution_clock::now();
     for (size_t j = 0; j < num_iters; ++j)
     {
         randvec = getrandvec(num_samples);
         trainimages = randomizeImages(images, randvec);
         trainlabels = randomizeLabels(labels, randvec);
+        // for (size_t i = 0; i < 10; i++)
+        // {
+        //     std::cout << trainimages.es[i] << 
+        // }
         
         ld1.forward(trainimages);
-        relu.forward(ld1.output);
+        sqd1.forward(trainimages);
+        
+        mat_sum(ldandsqd, ld1.output);
+        mat_sum(ldandsqd, sqd1.output);
+        relu.forward(ldandsqd);
         ld2.forward(relu.output);
         relu2.forward(ld2.output);
         ld3.forward(relu2.output);
         soft.forward(ld3.output);
-        // mat_print(soft.output);
         // std::cout << "shape " << ld3.output.rows << ", " << ld3.output.cols << std::endl;
         loss.forward(soft.output, trainlabels);
         
@@ -197,16 +212,19 @@ int main()
         relu2.backward(ld3.dinputs);
         ld2.backward(relu2.dinputs);
         relu.backward(ld2.dinputs);
+        sqd1.backward(ld2.dinputs);
         ld1.backward(relu.dinputs);
-
+        // std::cout << sqd1.dweights.rows << " " << sqd1.dweights.cols << std::endl;
+        // for (size_t i = 0; i < 50; i++)
+        // {
+        //     std::cout << sqd1.dweights.es[i] << " " << std::endl;
+        // }
+        
         opt.update_params(ld3);
         opt.update_params(ld2);
+        opt.update_params(sqd1);
         opt.update_params(ld1);
     }
-    auto stop = std::chrono::high_resolution_clock::now();
-    auto duration = stop - start;
-
-    std::cout << "time " << duration.count()/1000000 << std::endl;
     
     return 0;
 }

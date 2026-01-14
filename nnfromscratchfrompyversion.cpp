@@ -10,12 +10,21 @@
 class LayerDense
 {
 public:
-    LayerDense(int n_inputs, int n_neurons, bool bias, int num_samples);
+    LayerDense(int n_inputs, int n_out, bool bias, int num_samples);
+    LayerDense(int embed_dim, int n_out, bool bias, int batch_size, int seq_len);
     void forward(Mat inputs);
+    void forward(Tensor inputs);
+    void halfforward(Mat inputs);
+    void halfbackward(Mat dvalues);
     void backward(Mat dvalues);
+    void backward(Tensor dvalues);
     void randomize(float percentrand);
     //~LayerDense();
     Mat output;
+    //for testing half dot learning.
+    Mat duboutput;
+    //output for tensors forward.
+    Tensor toutput;
     Mat dinputs;
     Mat dbiases;
 
@@ -27,8 +36,10 @@ public:
     int n_samples;
     
     Mat dweights;
+    // Mat doubleweights;
     Mat layerinputs;
     Mat layerinputs_T;
+    Tensor tlayerinputs;
 };
 #endif
 
@@ -50,7 +61,29 @@ LayerDense::LayerDense(int n_inputs, int n_out, bool bias, int num_samples)
     layerinputs = mat_alloc(num_samples, n_inputs);
     layerinputs_T = mat_alloc(n_inputs, num_samples);
     output = mat_alloc(n_samples,n_out);
+    duboutput = mat_alloc(n_samples, 2*n_out);
 }
+
+LayerDense::LayerDense(int embed_dim, int n_out, bool bias, int batch_size, int seq_len)
+{
+    n_samples = embed_dim;
+    layerbias = bias;
+    weights = mat_alloc(embed_dim, n_out);
+    mat_rand(weights, -0.1, 0.1);
+    weights_T = mat_alloc(n_out, embed_dim);
+    if (layerbias)
+    {
+        biases = mat_alloc(1,n_out);
+        mat_rand(biases, -1.0,1.0);
+        dbiases = mat_alloc(1, n_out);
+    }
+    dweights = mat_alloc(embed_dim, n_out);
+    dinputs = mat_alloc(batch_size,embed_dim);
+    layerinputs = mat_alloc(batch_size, embed_dim);
+    layerinputs_T = mat_alloc(embed_dim, batch_size);
+    toutput = tensor_alloc(batch_size, seq_len,n_out);
+}
+
 
 void LayerDense::forward(Mat inputs)
 {
@@ -65,29 +98,152 @@ void LayerDense::forward(Mat inputs)
     }
 }
 
+void LayerDense::halfforward(Mat inputs)
+{
+    layerinputs = inputs;
+    //no biases yet.
+    mat_half_dot(duboutput, inputs, weights);
+}
+
+void LayerDense::forward(Tensor inputs)
+{
+    tlayerinputs = inputs;
+    if (layerbias)
+    {
+        //bmm(toutput, inputs, weights);
+        std::cout <<  "did not make tensor version of dot product with bias in layerdense \n";
+    }
+    else
+    {
+        bmm(toutput, inputs, weights);
+        
+    }
+}
+
 void LayerDense::backward(Mat dvalues)
 {
     mat_transpose(layerinputs_T,  layerinputs);
     mat_dot(dweights, layerinputs_T, dvalues);
     
-    // need to figure out what this part means......
     if (layerbias)
     {
-       for (size_t i = 0; i < dbiases.rows; i++)
-       {
-        MAT_AT(dbiases, i, 0) = 0;
-           for (size_t j = 0; j < dvalues.cols; j++)
-           {
-                MAT_AT(dbiases, i, 0) += MAT_AT(dvalues, i, j);
-           }   
-       }
+        for (size_t i = 0; i < dvalues.cols; i++)
+        {
+            for (size_t j = 0; j < dvalues.rows; j++)
+            {
+                MAT_AT(dbiases, 0, i) += MAT_AT(dvalues, j, i);
+            }
+            
+        }
     }
     //...........
     mat_transpose(weights_T, weights);
     mat_dot(dinputs, dvalues, weights_T);
 }
 
+void LayerDense::halfbackward(Mat dvalues)
+{
 
+
+   // ----------------------------------------------------------------
+    // 1. Calculate Gradients for Weights (dweights)
+    // ----------------------------------------------------------------
+    // We reverse the forward pass logic:
+    // - Top half of weights (rows 0 to N/2) contributed to Left Output (cols 0 to D)
+    // - Bottom half (rows N/2 to N) contributed to Right Output (cols D to 2D)
+
+    size_t n = weights.rows;      // N
+    size_t d = weights.cols;      // D (half of dvalues.cols)
+    size_t r = layerinputs.rows;  // Batch size
+
+    // Reset dweights to 0
+    mat_fill(dweights, 0);
+
+    // Part A: Top half of weights gets gradient from Left half of dvalues
+    // dW_top = inputs_left^T * dvalues_left
+    for (size_t k = 0; k < n / 2; k++) {
+        for (size_t j = 0; j < d; j++) {
+            float acc = 0.0f;
+            for (size_t i = 0; i < r; i++) {
+                acc += MAT_AT(layerinputs, i, k) * MAT_AT(dvalues, i, j);
+            }
+            MAT_AT(dweights, k, j) = acc;
+        }
+    }
+
+    // Part B: Bottom half of weights gets gradient from Right half of dvalues
+    // dW_bottom = inputs_right^T * dvalues_right
+    for (size_t k = n / 2; k < n; k++) {
+        for (size_t j = 0; j < d; j++) {
+            float acc = 0.0f;
+            for (size_t i = 0; i < r; i++) {
+                // Note: dvalues column is offset by 'd' (the right half)
+                acc += MAT_AT(layerinputs, i, k) * MAT_AT(dvalues, i, d + j);
+            }
+            MAT_AT(dweights, k, j) = acc;
+        }
+    }
+
+    // ----------------------------------------------------------------
+    // 2. Calculate Gradients for Bias (dbiases)
+    // ----------------------------------------------------------------
+    
+    // if (layerbias)
+    // {
+    //     // Standard summation over batch dimension
+    //     for (size_t j = 0; j < dvalues.cols; j++) // Iterate 0 to 2D
+    //     {
+    //         MAT_AT(dbiases, 0, j) = 0;
+    //         for (size_t i = 0; i < dvalues.rows; i++)
+    //         {
+    //             MAT_AT(dbiases, 0, j) += MAT_AT(dvalues, i, j);
+    //         }
+    //     }
+    // }
+
+    // ----------------------------------------------------------------
+    // 3. Calculate Gradients for Inputs (dinputs)
+    // ----------------------------------------------------------------
+    // dinputs = dvalues * weights_T
+    // Split logic:
+    // - Left Input Grads (cols 0 to N/2) come from Left dvalues * Top Weights
+    // - Right Input Grads (cols N/2 to N) come from Right dvalues * Bottom Weights
+
+    // Reset dinputs to 0
+    mat_fill(dinputs, 0);
+
+    // Part A: Left half of inputs (dvalues_left * weights_top_T)
+    for (size_t i = 0; i < r; i++) {
+        for (size_t k = 0; k < n / 2; k++) {
+            float acc = 0.0f;
+            for (size_t j = 0; j < d; j++) {
+                // weights[k, j] is effectively weights_T[j, k]
+                // We use dvalues[i, j] (Left half)
+                acc += MAT_AT(dvalues, i, j) * MAT_AT(weights, k, j);
+            }
+            MAT_AT(dinputs, i, k) = acc;
+        }
+    }
+
+    // Part B: Right half of inputs (dvalues_right * weights_bottom_T)
+    for (size_t i = 0; i < r; i++) {
+        for (size_t k = n / 2; k < n; k++) {
+            float acc = 0.0f;
+            for (size_t j = 0; j < d; j++) {
+                // We use dvalues[i, d+j] (Right half)
+                // Weights accessed at [k, j] which is correct for bottom block
+                acc += MAT_AT(dvalues, i, d + j) * MAT_AT(weights, k, j);
+            }
+            MAT_AT(dinputs, i, k) = acc;
+        }
+    }
+}
+
+
+void LayerDense::backward(Tensor dvalues)
+{
+
+}
 
 void LayerDense::randomize(float percentrand)
 {
@@ -106,6 +262,722 @@ void LayerDense::randomize(float percentrand)
     }
     
 }
+
+
+class Subsetlayer
+{
+public:
+    Subsetlayer(int n_inputs, int n_out, bool bias, int num_samples, const std::vector<std::tuple<int, int>> &randgrads);
+    // LayerDense(int embed_dim, int n_out, bool bias, int batch_size, int seq_len);
+    void forward(Mat inputs);
+    void forward(Tensor inputs);
+    void halfforward(Mat inputs);
+    void halfbackward(Mat dvalues);
+    void backward(Mat dvalues);
+    void backward(Tensor dvalues);
+    void randomize(float percentrand);
+    //~LayerDense();
+    Mat output;
+    Mat dinputs;
+    Mat dbiases;
+
+//private:
+    Mat weights;
+    Mat weights_T;
+    Mat biases;
+    bool layerbias;
+    int n_samples;
+    
+    Mat dweights;
+    // Mat doubleweights;
+    Mat layerinputs;
+    Mat layerinputs_T;
+    std::vector<std::tuple<int, int>> fewgrads;
+};
+
+
+Subsetlayer::Subsetlayer(int n_inputs, int n_out, bool bias, int num_samples, const std::vector<std::tuple<int, int>> &randgrads)
+{
+    n_samples = num_samples;
+    layerbias = bias;
+    weights = mat_alloc(n_inputs, n_out);
+    mat_rand(weights, -0.1, 0.1);
+    weights_T = mat_alloc(n_out, n_inputs);
+    if (layerbias)
+    {
+        biases = mat_alloc(1,n_out);
+        mat_rand(biases, -1.0,1.0);
+        dbiases = mat_alloc(1, n_out);
+    }
+    dweights = mat_alloc(n_inputs, n_out);
+    dinputs = mat_alloc(num_samples,n_inputs);
+    layerinputs = mat_alloc(num_samples, n_inputs);
+    layerinputs_T = mat_alloc(n_inputs, num_samples);
+    output = mat_alloc(n_samples,n_out);
+    fewgrads = randgrads;
+    
+}
+
+void Subsetlayer::forward(Mat inputs)
+{
+    layerinputs = inputs;
+    if (layerbias)
+    {
+        mat_dot_bias(output, inputs, weights, biases);
+    }
+    else
+    {
+        mat_dot(output, inputs, weights);
+    }
+}
+
+void Subsetlayer::backward(Mat dvalues)
+{
+    // mat_transpose(layerinputs_T,  layerinputs);
+    // mat_dot(dweights, layerinputs_T, dvalues);
+    mat_fill(dweights, 0.0);
+    for(const auto& [row, col] : fewgrads)
+    {
+        for (size_t i = 0; i < layerinputs.rows; i++)
+        {
+            MAT_AT(dweights, row, col) += MAT_AT(layerinputs, i, row) * MAT_AT(dvalues, i, col);
+        }
+    }
+    
+
+
+
+    if (layerbias)
+    {
+        for (size_t i = 0; i < dvalues.cols; i++)
+        {
+            for (size_t j = 0; j < dvalues.rows; j++)
+            {
+                MAT_AT(dbiases, 0, i) += MAT_AT(dvalues, j, i);
+            }
+            
+        }
+    }
+    //...........
+    mat_transpose(weights_T, weights);
+    mat_dot(dinputs, dvalues, weights_T);
+}
+
+
+
+class Lora
+{
+public:
+    Lora(int n_inputs, int n_out, bool bias, int num_samples, int rank);
+    void forward(Mat inputs);
+    void backward(Mat dvalues);
+    void bigBack(Mat dvalues);
+
+    Mat output;
+   
+    Mat dinputs;
+    Mat dbiases;
+
+//private:
+    Mat wA, wB;
+    // Mat weights_T;
+    Mat biases;
+    bool layerbias;
+    int n_samples, rank;
+    
+    Mat dwA, dwB;
+    Mat layerinputs;
+    // Mat layerinputs_T;
+};
+
+Lora::Lora(int n_inputs, int n_out, bool bias, int num_samples, int r)
+{
+    n_samples = num_samples;
+    layerbias = bias;
+    rank = r;
+    wA = mat_alloc(n_inputs, rank);
+    wB = mat_alloc(rank, n_out);
+    
+    mat_rand(wA, -1, 1);
+    mat_rand(wB, -0.5, 0.5);
+    if (layerbias)
+    {
+        biases = mat_alloc(1,n_out);
+        mat_rand(biases, -1.0,1.0);
+        dbiases = mat_alloc(1, n_out);
+    }
+    dwA = mat_alloc(n_inputs, rank);
+    dwB = mat_alloc(rank, n_out);
+    dinputs = mat_alloc(num_samples,n_inputs);
+    layerinputs = mat_alloc(num_samples, n_inputs);
+    // layerinputs_T = mat_alloc(n_inputs, num_samples);
+    output = mat_alloc(n_samples,n_out);
+}
+
+void Lora::forward(Mat inputs)
+{
+    assert(inputs.rows == output.rows);
+    assert(wB.cols == output.cols);
+    assert(wA.cols == wB.rows);
+    assert(wA.rows ==  inputs.cols);
+    assert(wB.cols == output.cols);
+    
+    layerinputs = inputs;
+    for (size_t i = 0; i < output.rows; i++)
+    {
+        for (size_t j = 0; j < output.cols; j++)
+        {
+            //should probably move outside of all for loops if you want faster. 
+            if(layerbias) MAT_AT(output,i,j) = MAT_AT(biases, 0,j);
+            else MAT_AT(output, i,j) = 0.0;
+            for (size_t l = 0; l < inputs.cols; l++)
+            {
+                double totalweight{0};
+                for (size_t k = 0; k < rank; k++)
+                {
+                    totalweight += MAT_AT(wA, l,k) * MAT_AT(wB, k, j);
+                    
+                }
+                MAT_AT(output, i,j) += MAT_AT(inputs, i, l) * totalweight;
+            }
+            
+        }
+       
+    }
+    
+}
+
+
+void Lora::bigBack(Mat dvalues)
+{
+    if (layerbias)
+    {
+        for (size_t i = 0; i < dvalues.cols; i++)
+        {
+            for (size_t j = 0; j < dvalues.rows; j++)
+            {
+                MAT_AT(dbiases, 0, i) += MAT_AT(dvalues, j, i);
+            }        
+        }
+    }
+    
+    Mat inpwa = mat_alloc(layerinputs.rows, wA.cols);
+    Mat inpwa_t = mat_alloc(wA.cols, layerinputs.rows);
+    Mat layerinputs_t = mat_alloc(layerinputs.cols, layerinputs.rows);
+    Mat dvalwb = mat_alloc(dvalues.rows, wB.rows);
+    Mat wa_t = mat_alloc(wA.cols, wA.rows);
+    Mat wb_t = mat_alloc(wB.cols, wB.rows);
+
+    //calculate dvalwb here
+    mat_transpose(wb_t, wB);
+
+    mat_dot(dvalwb, dvalues, wb_t);
+
+
+    //inputs and wa combined
+    mat_dot(inpwa, layerinputs, wA);
+   
+    // dot of inputwa and dvals to get dwb
+    mat_transpose(inpwa_t, inpwa);
+    mat_dot(dwB, inpwa_t, dvalues);    
+    //inputs transposed dotted with mix of dvalues and wb 
+
+    mat_transpose(layerinputs_t, layerinputs);
+    mat_dot(dwA, layerinputs_t, dvalwb);
+
+    //calculate dinputs, don't need since first layer
+    mat_dot(dinputs, dvalwb, wa_t);
+
+
+
+    mat_free(inpwa);
+    mat_free(inpwa_t);
+    mat_free(layerinputs_t);
+    mat_free(dvalwb);
+    mat_free(wa_t);
+    mat_free(wb_t);
+   
+}
+
+void Lora::backward(Mat dvalues)
+{
+   
+
+    // IMPORTANT: grad_wA and grad_wB must start at 0.0 because we accumulate +=
+    mat_fill(dwA, 0);
+    mat_fill(dwB, 0);
+
+    //gemini code....... 
+    size_t N = layerinputs.rows;      // Batch size
+    size_t I = layerinputs.cols;      // Input features
+    size_t J = dvalues.cols; // Output features
+    size_t R = rank;             // LoRA Rank
+
+    // 1. Bias Gradients
+    // Simple accumulation, no extra memory needed
+    if (layerbias)
+    {
+        for (size_t j = 0; j < J; j++)
+        {
+            double sum = 0.0;
+            for (size_t n = 0; n < N; n++) sum += MAT_AT(dvalues, n, j);
+            MAT_AT(dbiases, 0, j) = sum;
+        }
+    }
+
+    // 2. Weights and Input Gradients
+    // We iterate through the Batch (N) and Rank (R) first.
+    // Inside these loops, we calculate temporary scalars on the fly.
+    
+    for (size_t n = 0; n < N; n++)
+    {
+        for (size_t r = 0; r < R; r++)
+        {
+            // --- Scalar A: Project Gradient backward through B ---
+            // Represents (grad_output[n] . wB[r]^T)
+            // We compute this single double value by looping over J
+            double grad_proj_scalar = 0.0;
+            for (size_t j = 0; j < J; j++)
+            {
+                grad_proj_scalar += MAT_AT(dvalues, n, j) * MAT_AT(wB, r, j);
+            }
+    
+            // --- Scalar B: Project Input forward through A ---
+            // Represents (inputs[n] . wA[r])
+            // We compute this single double value by looping over I
+            double input_proj_scalar = 0.0;
+            for (size_t i = 0; i < I; i++)
+            {
+                input_proj_scalar += MAT_AT(layerinputs, n, i) * MAT_AT(wA, i, r);
+            }
+
+            // --- Apply to Gradients ---
+            // std::cout << "grad proj " << grad_proj_scalar << " ";
+            // Update grad_wB (using Scalar B)
+            // dL/dwB += (Input * wA)^T * grad_output
+            for (size_t j = 0; j < J; j++)
+            {
+                MAT_AT(dwB, r, j) += input_proj_scalar * MAT_AT(dvalues, n, j);
+            }
+
+            // Update grad_wA and grad_inputs (using Scalar A)
+            // dL/dwA    += Input^T * (grad_output * wB^T)
+            // dL/dInput += (grad_output * wB^T) * wA^T
+            for (size_t i = 0; i < I; i++)
+            {
+                // Update Weight A Gradient
+                MAT_AT(dwA, i, r) += MAT_AT(layerinputs, n, i) * grad_proj_scalar;
+                // Update Input Gradient (to pass to previous layer)
+                MAT_AT(dinputs, n, i) += grad_proj_scalar * MAT_AT(wA, i, r);
+            }
+        }
+        // std::cout << std::endl;
+        //...........
+    }
+
+
+
+
+
+
+
+    //my code........######
+    // //find dwb
+    // for (size_t i = 0; i < R; i++)
+    // {
+    //     for (size_t j = 0; j < outputcols; j++)
+    //     {
+    //         double inpwa{0};
+    //         for (size_t k = 0; k < inputrows; k++)
+    //         {
+    //             for (size_t l = 0; l < inputcols; l++)
+    //             {
+    //                 inpwa += MAT_AT(layerinputs, k,l) * MAT_AT(wA, l, i);
+    //             }
+    //         }
+    //         for (size_t k = 0; k < inputrows; k++)
+    //         {
+    //             MAT_AT(dwB, i,j) += inpwa * MAT_AT(dvalues, k, j);
+    //         }
+            
+    //     }
+        
+    // }
+    
+    //##############
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+//seems worthless but maybe not worthless. if trying again, use without relu between this and next layer. possibly don't use any nonlinearity.
+class LayerKron
+{
+public:
+    LayerKron(int n_inputs, int n_out, bool bias, int num_samples);
+    void forward(Mat inputs);
+    void backward(Mat dvalues);
+
+
+    Mat output;
+    Mat output_t;
+    Mat dinputs;
+    Mat dbiases;
+
+//private:
+    Mat weights;
+    Mat weights_avg;
+    Mat biases;
+    bool layerbias;
+    int n_samples;
+    
+    Mat dweights;
+    Mat layerinputs;
+    Mat layerinputs_avg;
+    Mat dval_avg;
+    Mat dvals_t;
+    
+};
+
+LayerKron::LayerKron(int n_inputs, int n_out, bool bias, int num_samples)
+{
+    n_samples = num_samples;
+    layerbias = bias;
+    weights = mat_alloc(n_inputs, n_out);
+    mat_rand(weights, -0.1, 0.1);
+    if (layerbias)
+    {
+        //not sure how i want this yet. for now same as  output_t
+        biases = mat_alloc(n_inputs*n_out,num_samples);
+        mat_rand(biases, -1.0,1.0);
+        dbiases = mat_alloc(n_inputs*n_out,num_samples);
+    }
+    dweights = mat_alloc(n_inputs, n_out);
+    dinputs = mat_alloc(num_samples,n_inputs);
+    layerinputs = mat_alloc(n_samples, n_inputs);
+    layerinputs_avg = mat_alloc(1,n_inputs);
+    dval_avg = mat_alloc(1,n_inputs*n_out);
+    weights_avg = mat_alloc(1, n_inputs);
+    //a_cols x b_cols, a_rows
+    output_t = mat_alloc(n_inputs*n_out,num_samples);
+    //need to transpose to plug into next layer
+    output = mat_alloc(n_samples, n_inputs*n_out);
+    dvals_t = mat_alloc(n_inputs*n_out, num_samples); 
+}
+
+
+void LayerKron::forward(Mat inputs)
+{
+    layerinputs = inputs;
+    if (layerbias) { rowtocolkron_bias(output_t, inputs, weights, biases); }
+    else { rowtocolkron(output_t, inputs, weights); }
+    mat_transpose(output, output_t);
+}
+
+//unfinished but I think not necessary to finish if you keep it as the first layer, only missing deriv of inputs to layer. 
+//if trying again, use without relu between this and next layer. possibly don't use any nonlinearity.
+void LayerKron::backward(Mat dvalues)
+{
+    mat_fill(layerinputs_avg, 0);
+    //ok first get average of input along dim=1. then do the same with dvals. then mult inputavg by dvaluesavg will give gradient of weights.
+    for (size_t i = 0; i < layerinputs.rows; i++)
+    {
+        for (size_t j = 0; j < layerinputs.cols; j++)
+        {
+            MAT_AT(layerinputs_avg, 0,j) += (MAT_AT(layerinputs, i, j) / (double)layerinputs.cols);
+        }
+    }
+    // mat_print(layerinputs_avg);
+    for (size_t i = 0; i < dvalues.rows; i++)
+    {
+        for (size_t j = 0; j < dvalues.cols; j++)
+        {
+            MAT_AT(dval_avg, 0, j) += MAT_AT(dvalues, i,j) / (double)dvalues.cols;
+        }
+    }
+    
+    //also get weights avg while we are here for getting dinputs later.
+    for (size_t i = 0; i < weights.rows; i++)
+    {
+        for (size_t j = 0; j < weights.cols; j++)
+        {
+            MAT_AT(weights_avg, 0, i) += MAT_AT(weights, i, j) / (double)weights.rows;
+        }
+    }
+
+    //these two parts are a problem........
+
+    //next get grads from dvals and inputs
+    mat_fill(dweights, 0);
+    for (size_t i = 0; i < dweights.rows; i++)
+    {
+        for (size_t j = 0; j < dweights.cols; j++)
+        {
+            MAT_AT(dweights, i, j) = MAT_AT(dval_avg, 0,i*dweights.cols+j) * MAT_AT(layerinputs_avg, 0, i);
+        }
+    }
+    
+    
+    if (layerbias)
+    {
+       for (size_t i = 0; i < dbiases.rows; i++)
+       {
+           for (size_t j = 0; j < dbiases.cols; j++)
+           {
+            //do dvals j, i indexing because i had to flip the output to get numsamples by number of neurons for the next layer.
+                MAT_AT(dbiases, i, j) = MAT_AT(dvalues, j, i);
+           }   
+       }
+    }
+   
+    //next find the dinputs
+
+}
+
+
+//I think this just maps to a new number so it is essentially useless. 
+// class SqLayerDense
+// {
+// public:
+//     //for mats
+//     SqLayerDense(int n_inputs, int n_out, bool bias, int num_samples);
+//     //for tensors
+//     SqLayerDense(int embed_dim, int n_out, bool bias, int batch_size, int seq_len);
+//     void forward(Mat inputs);
+//     void forward(Tensor inputs);
+//     void backward(Mat dvalues);
+//     void backward(Tensor dvalues);
+//     void randomize(float percentrand);
+//     //~LayerDense();
+//     Mat output;
+//     Tensor toutput;
+//     Mat dinputs;
+//     Mat dbiases;
+
+// //private:
+//     Mat weights;
+//     Mat weights_T;
+//     Mat biases;
+//     bool layerbias;
+//     int n_samples;
+    
+//     Mat dweights;
+//     Mat layerinputs;
+//     Mat layerinputs_T;
+//     Tensor tlayerinputs;
+
+//     Mat doubleweights;
+//     Mat weightsTsq;
+//     float pow;
+// };
+
+// SqLayerDense::SqLayerDense(int n_inputs, int n_out, bool bias, int num_samples)
+// {
+//     n_samples = num_samples;
+//     pow = 2;
+//     layerbias = bias;
+//     weights = mat_alloc(n_inputs, n_out);
+//     mat_rand(weights, -0.1, 0.1);
+//     weights_T = mat_alloc(n_out, n_inputs);
+//     if (layerbias)
+//     {
+//         biases = mat_alloc(1,n_out);
+//         mat_rand(biases, -1.0,1.0);
+//         dbiases = mat_alloc(1, n_out);
+//     }
+//     dweights = mat_alloc(n_inputs, n_out);
+//     doubleweights = mat_alloc(n_inputs, n_out);
+//     dinputs = mat_alloc(num_samples,n_inputs);
+//     layerinputs = mat_alloc(num_samples, n_inputs);
+//     layerinputs_T = mat_alloc(n_inputs, num_samples);
+//     output = mat_alloc(n_samples,n_out);
+//     weightsTsq = mat_alloc(n_out, n_inputs);
+// }
+
+// SqLayerDense::SqLayerDense(int embed_dim, int n_out, bool bias, int batch_size, int seq_len)
+// {
+//     n_samples = embed_dim;
+//     pow = 2;
+//     layerbias = bias;
+//     weights = mat_alloc(embed_dim, n_out);
+//     mat_rand(weights, -0.1, 0.1);
+//     weights_T = mat_alloc(n_out, embed_dim);
+//     // if (layerbias)
+//     // {
+//     //     biases = mat_alloc(1,n_out);
+//     //     mat_rand(biases, -1.0,1.0);
+//     //     dbiases = mat_alloc(1, n_out);
+//     // }
+//     dweights = mat_alloc(embed_dim, n_out);
+//     dinputs = mat_alloc(batch_size,embed_dim);
+//     layerinputs = mat_alloc(batch_size, embed_dim);
+//     layerinputs_T = mat_alloc(embed_dim, batch_size);
+//     toutput = tensor_alloc(batch_size, seq_len,n_out);
+// }
+
+// void SqLayerDense::forward(Mat inputs)
+// {
+//     layerinputs = inputs;
+//     if (layerbias)
+//     {
+//         power_mat_dot_bias(output, inputs, weights, biases, pow);
+//     }
+//     else
+//     {
+//         power_mat_dot(output, inputs, weights, pow);
+//     }
+// }
+
+// void SqLayerDense::forward(Tensor inputs)
+// {
+    
+// }
+
+// void SqLayerDense::backward(Mat dvalues)
+// {
+//     mat_transpose(layerinputs_T,  layerinputs);
+//     mat_dot(dweights, layerinputs_T, dvalues);
+    
+//     std::cout << std::endl;
+//     mat_scalertimes(doubleweights, weights, 2);
+//     mat_elemwise_mult(dweights, dweights, doubleweights);
+   
+    
+//     // need to figure out what this part means......
+//     if (layerbias)
+//     {
+//        for (size_t i = 0; i < dbiases.rows; i++)
+//        {
+//         MAT_AT(dbiases, i, 0) = 0;
+//            for (size_t j = 0; j < dvalues.cols; j++)
+//            {
+//                 MAT_AT(dbiases, i, 0) += MAT_AT(dvalues, i, j);
+//            }   
+//        }
+//     }
+//     //...........
+//     mat_transpose(weights_T, weights);
+//     mat_elemwise_mult(weightsTsq, weights_T, weights_T);
+//     mat_dot(dinputs, dvalues, weightsTsq);
+// }
+
+
+
+// class CubeLayerDense
+// {
+//     CubeLayerDense(int n_inputs, int n_out, bool bias, int num_samples);
+//     void forward(Mat inputs);
+//     // void forward(Tensor inputs);
+//     void backward(Mat dvalues);
+//     // void backward(Tensor dvalues);
+//     void randomize(float percentrand);
+//     //~LayerDense();
+//     Mat output;
+//     Tensor toutput;
+//     Mat dinputs;
+//     Mat dbiases;
+
+// //private:
+//     Mat weights;
+//     Mat weights_T;
+//     Mat biases;
+//     bool layerbias;
+//     int n_samples;
+    
+//     Mat dweights;
+    
+//     Mat layerinputs;
+//     Mat layerinputs_T;
+//     Tensor tlayerinputs;
+
+//     Mat weightscubederiv;
+//     Mat weightsTcube;
+//     Mat weightsSq;
+//     Mat tripleweightsSq;
+//     float pow;
+// };
+
+
+// CubeLayerDense::CubeLayerDense(int n_inputs, int n_out, bool bias, int num_samples)
+// {
+//     n_samples = num_samples;
+//     pow = 3;
+//     layerbias = bias;
+//     weights = mat_alloc(n_inputs, n_out);
+//     mat_rand(weights, -0.1, 0.1);
+//     weights_T = mat_alloc(n_out, n_inputs);
+//     if (layerbias)
+//     {
+//         biases = mat_alloc(1,n_out);
+//         mat_rand(biases, -1.0,1.0);
+//         dbiases = mat_alloc(1, n_out);
+//     }
+//     dweights = mat_alloc(n_inputs, n_out);
+//     tripleweightsSq = mat_alloc(n_inputs, n_out);
+//     dinputs = mat_alloc(num_samples,n_inputs);
+//     layerinputs = mat_alloc(num_samples, n_inputs);
+//     layerinputs_T = mat_alloc(n_inputs, num_samples);
+//     output = mat_alloc(n_samples,n_out);
+
+//     weightsTcube = mat_alloc(n_out, n_inputs);
+//     weightsSq = mat_alloc(n_inputs, n_out);
+// }
+
+
+// void CubeLayerDense::forward(Mat inputs)
+// {
+//      layerinputs = inputs;
+//     if (layerbias)
+//     {
+//         power_mat_dot_bias(output, inputs, weights, biases, pow);
+//     }
+//     else
+//     {
+//         power_mat_dot(output, inputs, weights, pow);
+//     }
+// }
+
+// //not done
+// void CubeLayerDense::backward(Mat dvalues)
+// {
+//     mat_transpose(layerinputs_T,  layerinputs);
+//     mat_dot(dweights, layerinputs_T, dvalues);
+
+//     mat_scalertimes(tripleweightsSq, weights, 3);
+//     mat_elemwise_mult(tripleweightsSq, weights, tripleweightsSq);
+//     mat_elemwise_mult(dweights, dweights, tripleweightsSq);
+//     // need to figure out what this part means......
+//     if (layerbias)
+//     {
+//        for (size_t i = 0; i < dbiases.rows; i++)
+//        {
+//         MAT_AT(dbiases, i, 0) = 0;
+//            for (size_t j = 0; j < dvalues.cols; j++)
+//            {
+//                 MAT_AT(dbiases, i, 0) += MAT_AT(dvalues, i, j);
+//            }   
+//        }
+//     }
+   
+//     mat_transpose(weights_T, weights);
+//     //double elem wise mult to get a cubed value. w_t*w_t*w_t.
+//     mat_elemwise_mult(weightsTcube, weights_T, weights_T);
+//     mat_elemwise_mult(weightsTcube, weightsTcube, weights_T);
+//     mat_dot(dinputs, dvalues, weightsTcube);
+// }
+
+
 
 
 class Convolution2D
@@ -275,7 +1147,7 @@ class Relu_Activation
 public:
 
     Relu_Activation(int num_samples, int num_neurons);
-    Relu_Activation(int num_samples, int num_neurons, int numdvalrows, int numdvalcols);
+    // Relu_Activation(int num_samples, int num_neurons, int numdvalrows, int numdvalcols);
     void forward(Mat inputs);
     void backward(Mat dvalues);
 
@@ -291,18 +1163,16 @@ Relu_Activation::Relu_Activation(int num_samples, int num_neurons)
     layerinputs = mat_alloc(num_samples, num_neurons);
 }
 
-Relu_Activation::Relu_Activation(int num_samples, int num_neurons, int numdvalrows, int numdvalcols)
-{
-    dinputs = mat_alloc(num_samples, num_neurons);
-    output = mat_alloc(num_samples, num_neurons);
-    layerinputs = mat_alloc(num_samples, num_neurons);
-    dinputs = mat_alloc(numdvalrows, numdvalcols);
-}
+// Relu_Activation::Relu_Activation(int num_samples, int num_neurons, int numdvalrows, int numdvalcols)
+// {
+//     dinputs = mat_alloc(num_samples, num_neurons);
+//     output = mat_alloc(num_samples, num_neurons);
+//     layerinputs = mat_alloc(num_samples, num_neurons);
+//     dinputs = mat_alloc(numdvalrows, numdvalcols);
+// }
 
 void Relu_Activation::forward(Mat inputs)
 {
-    // layerinputs = mat_alloc(inputs.rows,inputs.cols);
-    // output = mat_alloc(inputs.rows, inputs.cols);
     for (size_t i = 0; i < output.rows; i++)
     {
         for (size_t j = 0; j < output.cols; j++)
@@ -334,6 +1204,7 @@ void Relu_Activation::backward(Mat dvalues)
 class Sigmoid
 {
 public:
+    Sigmoid(int num_samples, int n_out);
     void forward(Mat inputs);
     void backward(Mat dvalues);
     //~Sigmoid();
@@ -341,9 +1212,15 @@ public:
     Mat dinputs;
 };
 
+Sigmoid::Sigmoid(int num_samples, int n_out)
+{
+    output = mat_alloc(num_samples, n_out);
+    dinputs = mat_alloc(num_samples, n_out);
+}
+
 void Sigmoid::forward(Mat inputs)
 {
-    output = mat_alloc(inputs.rows, inputs.cols);
+    // output = mat_alloc(inputs.rows, inputs.cols);
     for (size_t i = 0; i < output.rows; i++)
     {
         for (size_t j = 0; j < output.cols; j++)
@@ -356,7 +1233,7 @@ void Sigmoid::forward(Mat inputs)
 
 void Sigmoid::backward(Mat dvalues)
 {
-    dinputs = mat_alloc(dvalues.rows, dvalues.cols);
+    // dinputs = mat_alloc(dvalues.rows, dvalues.cols);
     
     for (size_t i = 0; i < dinputs.rows; i++)
     {
@@ -373,6 +1250,7 @@ class Activation_softmax
 {
 public:
     Activation_softmax(int num_samples, int num_classes);
+    Activation_softmax(int batch_size, int seq_len, int num_classes);
     void forward(Mat inputs);
     void backward(Mat dvalues);
 
@@ -383,14 +1261,23 @@ public:
     Mat temp;
     Mat temp_t;
     Mat singleoutput;
+
+    //here......
+    Mat singledval;
+    //end...........
+
+
     Mat singleoutput_T;
     Mat soutdot;
+
+    Tensor toutput;
+    Tensor tdinputs;
 
     Mat exp_vals;
     Mat exp_sum;
     Mat maxes;
 
-     Mat dval_T;
+    Mat dval_T;
     Mat tempjac;
 };
 
@@ -399,28 +1286,42 @@ public:
 Activation_softmax::Activation_softmax(int num_samples, int num_classes)
 {
     dinputs = mat_alloc(num_samples,num_classes);
+    // diagflat = mat_alloc(num_classes,num_classes);
+
+    // mat_fill(diagflat, 0.0);
+    // temp = mat_alloc(num_classes,1);
+    // temp_t = mat_alloc(1,num_classes);
+
+    exp_vals = mat_alloc(num_samples, num_classes);
+    exp_sum = mat_alloc(num_samples, 1);
+    maxes = mat_alloc(num_samples, 1);
+    output = mat_alloc(num_samples,  num_classes);
+}
+
+Activation_softmax::Activation_softmax(int batch_size, int seq_len, int num_classes)
+{
+    tdinputs = tensor_alloc(batch_size, seq_len,num_classes);
     diagflat = mat_alloc(num_classes,num_classes);
 
     mat_fill(diagflat, 0.0);
     temp = mat_alloc(num_classes,1);
     temp_t = mat_alloc(1,num_classes);
 
-    exp_vals = mat_alloc(num_samples, num_classes);
-    exp_sum = mat_alloc(num_samples, 1);
-    maxes = mat_alloc(num_samples, 1);
-    output = mat_alloc(num_samples,  num_classes);
+    exp_vals = mat_alloc(batch_size, num_classes);
+    exp_sum = mat_alloc(batch_size, 1);
+    maxes = mat_alloc(batch_size, 1);
+    toutput = tensor_alloc(batch_size,seq_len,  num_classes);
     singleoutput = mat_alloc(1, num_classes);
+    
     singleoutput_T = mat_alloc(num_classes, 1);
     soutdot = mat_alloc(num_classes, num_classes);
    dval_T = mat_alloc(num_classes,1);
 //    tempjac = mat_alloc(num_classes, num_classes);
-   for (size_t i = 0; i < num_samples; i++)
+   for (size_t i = 0; i < batch_size; i++)
    {
         jacobians.push_back(mat_alloc(num_classes, num_classes));
    }
-   
 }
-
 
 void Activation_softmax::forward(Mat inputs)
 {   
@@ -457,32 +1358,18 @@ void Activation_softmax::forward(Mat inputs)
 
 void Activation_softmax::backward(Mat dvalues)
 {
-    //dvalues is 1 x numsamples
     for (size_t i = 0; i < output.rows; i++)
-    {   
-        singleoutput = mat_row(output, i);
-        mat_transpose(singleoutput_T, singleoutput);
-        mat_dot(soutdot, singleoutput_T, singleoutput);
+    {
+        float dot(0);
+        
         for (size_t j = 0; j < output.cols; j++)
         {
-            for (size_t k = 0; k < output.cols; k++)
-            {
-                if (j == k) 
-                {
-                    MAT_AT(diagflat, j, k) = MAT_AT(singleoutput, 0,j);
-                }
-                
-                MAT_AT(jacobians[i], j, k) = MAT_AT(diagflat, j, k)  - MAT_AT(soutdot, j, k);
-            }
+            dot += MAT_AT(output, i,j) * MAT_AT(dvalues, i, j);
         }
-        
-        mat_transpose(dval_T, mat_row(dvalues, i));
-        //dvalt shape  is numsamples x 1
-        mat_dot(temp,  jacobians[i],  dval_T);
-        mat_transpose(temp_t, temp);
-        for (size_t k = 0; k < dinputs.cols; k++)
+
+        for (size_t j = 0; j < output.cols; j++)
         {
-            MAT_AT(mat_row(dinputs,i),0,k) = MAT_AT(temp_t,0,k);
+            MAT_AT(dinputs, i, j) = MAT_AT(output, i, j) * (MAT_AT(dvalues, i, j) - dot);
         }
     }
     
@@ -541,7 +1428,7 @@ void Loss_categoricalCrossentropy:: forward(Mat y_pred, Mat y_true)
 void Loss_categoricalCrossentropy::backward(Mat dvalues, Mat y_true)
 {
     int samples = dvalues.rows;
-    int labels = dvalues.cols;
+    // int labels = dvalues.cols;
     for (size_t i = 0; i < dinputs.rows; i++)
     {
         for (size_t j = 0; j < dinputs.cols; j++)
@@ -569,9 +1456,11 @@ ASLCC::ASLCC()
 }
 
 
+
 class BinaryCrossentropy_Loss
 {
 public:
+    BinaryCrossentropy_Loss(int num_samples, int num_cols);
     void forward(Mat y_pred, Mat y_true);
     void backward(Mat dvalues, Mat y_true);
 
@@ -581,27 +1470,36 @@ public:
     Mat dinputs;
 };
 
+BinaryCrossentropy_Loss::BinaryCrossentropy_Loss(int num_samples, int num_cols)
+{
+    y_pred_clipped = mat_alloc(num_samples, num_cols);
+    sample_losses = mat_alloc(num_samples, num_cols);
+
+    //for backward
+    clipped_dvalues = mat_alloc(num_samples, num_cols);
+    dinputs = mat_alloc(num_samples, num_cols);
+}
+
 
 void BinaryCrossentropy_Loss::forward(Mat y_pred, Mat y_true)
 {
-    y_pred_clipped = mat_alloc(y_pred.rows, y_pred.cols);
-    sample_losses = mat_alloc(y_pred.rows, y_pred.cols);
+    
     for (size_t i = 0; i < y_pred.rows; i++)
     {
         
-        MAT_AT(y_pred_clipped,i,0) = std::clamp(MAT_AT(y_pred,i,0),0.00001, 0.9999);
+        MAT_AT(y_pred_clipped,i,0) = std::clamp(MAT_AT(y_pred,i,0),0.0001, 0.999);
         MAT_AT(sample_losses, i, 0) = -1*((MAT_AT(y_true, i, 0)*std::log(MAT_AT(y_pred_clipped, i, 0))) + ((1 - MAT_AT(y_true, i, 0))*std::log(1 - MAT_AT(y_pred_clipped,i,0))));
     }
 }
 
 void BinaryCrossentropy_Loss::backward(Mat dvalues, Mat y_true)
 {
-    clipped_dvalues = mat_alloc(dvalues.rows, dvalues.cols);
-    dinputs = mat_alloc(dvalues.rows, dvalues.cols);
+   
     for (size_t i = 0; i < dvalues.rows; i++)
     {
-        MAT_AT(clipped_dvalues, i,0) = std::clamp(MAT_AT(dvalues,i,0),0.00001, 0.9999);
-        MAT_AT(dinputs,i,0) = -(MAT_AT(y_true,i,0)/MAT_AT(clipped_dvalues,i,0) - (1-MAT_AT(y_true,i,0))/(1-MAT_AT(clipped_dvalues,i,0)));
+        MAT_AT(clipped_dvalues, i,0) = std::clamp(MAT_AT(dvalues,i,0),0.0001, 0.999);
+        // MAT_AT(dinputs,i,0) = -(MAT_AT(y_true,i,0)/MAT_AT(clipped_dvalues,i,0) - (1-MAT_AT(y_true,i,0))/(1-MAT_AT(clipped_dvalues,i,0)));
+        MAT_AT(dinputs,i,0) = (MAT_AT(clipped_dvalues, i, 0) - MAT_AT(y_true, i, 0)) /(MAT_AT(clipped_dvalues, i, 0) * (1 - MAT_AT(clipped_dvalues, i, 0)));
         MAT_AT(dinputs,i,0) /= dvalues.rows;
 
     }
@@ -625,7 +1523,7 @@ public:
     Mat d_w_q;
     Mat d_w_k;
     Mat d_w_v;
-private:
+// private:
     int num_embed;
     int head_dim;
 
@@ -647,6 +1545,8 @@ AttentionHead::AttentionHead(int num_embed, int batch_size, int seq_len, int hea
     w_v = mat_alloc(num_embed, head_dim);
 
     mat_rand(w_q, -0.5, 0.5);
+    mat_rand(w_k, -0.5,0.5);
+    mat_rand(w_v, -0.5,0.5);
 
     //size batch_size, seq_len, head_dim
     cache["q"] = tensor_alloc(batch_size,  seq_len, head_dim);
@@ -663,6 +1563,8 @@ AttentionHead::AttentionHead(int num_embed, int batch_size, int seq_len, int hea
     d_w_q = mat_alloc(num_embed, head_dim);
     d_w_v = mat_alloc(num_embed, head_dim);
 
+    //in the future should probably replace this with just calculating and forwarding to other gradients in the backward pass rather
+    //than saving these weights. 
     d_attention_weights = mat_alloc(seq_len, seq_len);
     v_T = mat_alloc(head_dim, seq_len);
     att_weight_T = mat_alloc(seq_len, seq_len);
@@ -698,16 +1600,13 @@ void AttentionHead::forward(const Tensor& x)
 
         mat_dot(output.mats[b], cache["attention_weights"].mats[b], cache["v"].mats[b]);
 
-
         mat_free(scores);
         mat_free(kt);
     }
-    
-
-
 }
 
 // in future update, make tensor a class and change multipl. transpose and handle memory management in destructor, also copy assignment etc. 
+//right now can only work for  vision because it has fixed sequence length.
 void AttentionHead::backward(const Tensor& dvalues)
 {
     const Tensor& x  = cache["x"];
@@ -734,26 +1633,7 @@ void AttentionHead::backward(const Tensor& dvalues)
         mat_transpose(att_weight_T, att_weights.mats[b]);
         mat_dot(d_v, att_weight_T, dvalues.mats[b]);
         soft.backward(att_weights.mats[b]);
-        //3. gradient of the softmax func
-        // Mat dscores = mat_alloc(att_weights.mats[b].rows, att_weights.mats[b].cols);
-        // Mat dsc_T = mat_alloc(dscores.cols, dscores.rows);
-        // mat_fill(dscores, 0);
-        // for (size_t i = 0; i < att_weights.mats[b].rows; i++)
-        // {
-        //     const Mat att_row = mat_row(att_weights.mats[b], i);
-        //     const Mat d_attn_row = mat_row(d_attention_weights, i);
-
-        //     double sum_grad = 0;
-        //     for (size_t j = 0; j < att_row.cols; j++)
-        //     {
-        //         sum_grad += MAT_AT(att_row, 0,j) * MAT_AT(d_attn_row, 0, j);
-                
-        //     }
-        //     for (size_t l = 0; l < att_row.cols; l++)
-        //     {
-        //         MAT_AT(dscores, i,l) = MAT_AT(att_row,0,l) * (MAT_AT(d_attn_row,0,l) -sum_grad);
-        //     }  
-        // }
+        
         Mat dsc_T = mat_alloc(soft.dinputs.cols, soft.dinputs.rows);
         mat_transpose(dsc_T, soft.dinputs);
         //2. gradient of attention scores
@@ -818,13 +1698,88 @@ void AttentionHead::backward(const Tensor& dvalues)
 }
 
 
+
+class MultiheadAttention
+{
+public:
+    MultiheadAttention(int num_heads, int num_embed, int batch_size, int seq_len);
+    void forward(const Tensor& x);
+    void copyheads();
+    void backward(const Tensor& dvalues);
+
+    Tensor output;
+    Tensor headsoutput;
+    int head_dim;
+    std::vector<AttentionHead> heads;
+    int bsize, slen, emb_dim, n_heads;
+    LayerDense den1;
+};
+
+
+MultiheadAttention::MultiheadAttention(int num_heads, int num_embed, int batch_size, int seq_len) : den1(num_embed, num_embed, false, batch_size, seq_len)
+{
+    bsize = batch_size;
+    slen = seq_len;
+    emb_dim = num_embed;
+    n_heads = num_heads;
+    assert(num_embed % num_heads == 0);
+    head_dim = num_embed / num_heads;
+
+    for (size_t i = 0; i < num_heads; i++)
+    {
+        heads.push_back(AttentionHead(num_embed, batch_size, seq_len, head_dim));
+    }
+    headsoutput = tensor_alloc(batch_size, seq_len, num_embed);
+    output = tensor_alloc(batch_size, seq_len, num_embed);
+    //i guess create dropout layer here...? yes i should learn this anyway. 
+    
+
+}
+
+void MultiheadAttention::copyheads()
+{
+    for (size_t i = 0; i < bsize; i++)
+    {
+        for (size_t j = 0; j < slen; j++)
+        {
+            int nh = 0;
+            for(auto head : heads)
+            {
+                for (size_t k = 0; k < head_dim; k++)
+                {
+                    MAT_AT(headsoutput.mats[i], j, (nh*head_dim)+k) = MAT_AT(head.output.mats[i], j, k);
+                }
+                nh++;
+            }
+        }
+        
+    }
+    
+}
+
+void MultiheadAttention::forward(const Tensor& x)
+{
+    for(auto head : heads)
+    {
+        head.forward(x);
+    }
+    //copy output of each head into a concatenated output.
+
+    copyheads();
+    den1.forward(headsoutput);
+    output = headsoutput;
+}
+
 class Optimizer_SGD
 {
 public:
     Optimizer_SGD(double learning_rate=0.01){  lr = learning_rate;}
     void update_params(LayerDense Layer);
+    void update_params(Lora Layer);
+    // void update_params(SqLayerDense layer);
     void update_params(Convolution2D conv);
     void update_params(AttentionHead layer);
+    void update_params(LayerKron layer);
     void update_randomly(LayerDense layer, float L);
 
 private:
@@ -848,8 +1803,58 @@ void Optimizer_SGD::update_params(LayerDense layer)
             MAT_AT(layer.biases, 0, i) -= lr * MAT_AT(layer.dbiases, 0, i);
         }
     }
-    
 }
+
+void Optimizer_SGD::update_params(Lora layer)
+{
+    for (size_t i = 0; i < layer.wA.rows; i++)
+    {
+        for (size_t j = 0; j < layer.wA.cols; j++)
+        {
+            // std::cout << "before " << MAT_AT(layer.wA, i, j) << "\n";
+            MAT_AT(layer.wA, i, j) -=  lr * MAT_AT(layer.dwA, i, j);
+            // std::cout <<
+        }
+    }
+    for (size_t i = 0; i < layer.wB.rows; i++)
+    {
+        for (size_t j = 0; j < layer.wB.cols; j++)
+        {
+            MAT_AT(layer.wB, i, j) -=  lr * MAT_AT(layer.dwB, i, j);
+        }
+    }
+
+    if (layer.layerbias)
+    {
+        for (int i = 0; i < layer.biases.cols; i++)
+        {
+            MAT_AT(layer.biases, 0, i) -= lr * MAT_AT(layer.dbiases, 0, i);
+        }
+    }
+}
+
+
+// void Optimizer_SGD::update_params(SqLayerDense layer)
+// {
+//     for (int i = 0; i < layer.weights.rows; i++)
+//     {
+//         for (int j = 0; j < layer.weights.cols; j++)
+//         {
+//             MAT_AT(layer.weights, i, j) -= lr* MAT_AT(layer.dweights, i, j);
+//         }
+//     }
+//
+//     if (layer.layerbias)
+//     {
+//         for (int i = 0; i < layer.biases.cols; i++)
+//         {
+//             MAT_AT(layer.biases, 0, i) -= lr * MAT_AT(layer.dbiases, 0, i);
+//         }
+//     }
+// }
+
+
+
 
 void Optimizer_SGD::update_params(Convolution2D conv)
 {
@@ -910,6 +1915,29 @@ void Optimizer_SGD::update_params(AttentionHead layer)
 }
 
 
+void Optimizer_SGD::update_params(LayerKron layer)
+{
+    for (int i = 0; i < layer.weights.rows; i++)
+    {
+        for (int j = 0; j < layer.weights.cols; j++)
+        {
+            MAT_AT(layer.weights, i, j) -= lr* MAT_AT(layer.dweights, i, j);
+        }
+    }
+
+    if (layer.layerbias)
+    {
+        for (size_t j = 0; j < layer.biases.rows; j++)
+        {
+            for (int i = 0; i < layer.biases.cols; i++)
+            {
+                MAT_AT(layer.biases, j, i) -= lr * MAT_AT(layer.dbiases, j, i);
+            }
+        }
+    }
+}
+
+
 
 void Optimizer_SGD::update_randomly(LayerDense layer, float L)
 {
@@ -941,4 +1969,101 @@ void Optimizer_SGD::update_randomly(LayerDense layer, float L)
 }
 
 
+
+
+
+
+
+
+
+
+//i dont think this is used anywhere............
+
+// class AttentionDense
+// {
+// public:
+//     AttentionDense(int n_inputs, int n_out, bool bias);
+
+//     void forward(Tensor inputs);
+//     void halfforward(Mat inputs);
+//     void halfbackward(Mat dvalues);
+//     void backward(Mat dvalues);
+//     void backward(Tensor dvalues);
+   
+//     Mat output;
+    
+//     Tensor toutput;
+//     Mat dinputs;
+//     Mat dbiases;
+
+// //private:
+//     Mat weights;
+//     Mat weights_T;
+//     Mat biases;
+//     bool layerbias;
+    
+//     Mat dweights;
+//     Tensor layerinputs;
+    
+//     Tensor tlayerinputs;
+// };
+
+
+// AttentionDense::AttentionDense(int n_inputs, int n_out, bool bias)
+// {
+//     layerbias = bias;
+//     weights = mat_alloc(n_inputs, n_out);
+//     mat_rand(weights, -0.1, 0.1);
+//     weights_T = mat_alloc(n_out, n_inputs);
+//     if (layerbias)
+//     {
+//         biases = mat_alloc(1,n_out);
+//         mat_rand(biases, -1.0,1.0);
+//         dbiases = mat_alloc(1, n_out);
+//     }
+//     dweights = mat_alloc(n_inputs, n_out);
+//     // dinputs = mat_alloc(num_samples,n_inputs);
+//     // layerinputs = mat_alloc(num_samples, n_inputs);
+//     // layerinputs_T = mat_alloc(n_inputs, num_samples);
+//     // output = mat_alloc(n_samples,n_out);
+//     // duboutput = mat_alloc(n_samples, 2*n_out);
+//     Tensor dinputs;
+// }
+
+// void AttentionDense::forward(Tensor inputs)
+// {
+//     tlayerinputs = inputs;
+//     if (layerbias)
+//     {
+//         //bmm(toutput, inputs, weights);
+//         std::cout <<  "did not make tensor version of dot product with bias in layerdense \n";
+//     }
+//     else
+//     {
+//         bmm(toutput, inputs, weights);
+        
+//     }
+// }
+
+// void AttentionDense::backward(Mat dvalues)
+// {
+//     //must rework this..............
+//     // mat_dot(dweights, layerinputs, dvalues);
+//     //................
+//     if (layerbias)
+//     {
+//         for (size_t i = 0; i < dvalues.cols; i++)
+//         {
+//             for (size_t j = 0; j < dvalues.rows; j++)
+//             {
+//                 MAT_AT(dbiases, 0, j) += MAT_AT(dvalues, j, i);
+//             }
+            
+//         }
+//     }
+//     //...........
+//     mat_transpose(weights_T, weights);
+    
+//     mat_dot(dinputs, dvalues, weights_T);
+// }
 

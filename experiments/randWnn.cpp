@@ -1,7 +1,6 @@
 #include <fstream>
 #include <time.h>
 #include <random>
-#include <chrono>
 #include "nnfromscratchfrompyversion.cpp"
 
 
@@ -14,8 +13,9 @@ double lr = 0.01;
 int n_inputs = 28*28;
 int  n_neurons = 256;
 int num_classes = 10;
-int num_iters = 501;
-int check_iter = 100;
+int num_iters = 201;
+int check_iter = 50;
+float randnum = 0.1f;
 
 //reading mnist images
 std::vector<std::vector<float>> read_images(const std::string& fileName)
@@ -147,32 +147,28 @@ int main()
     Mat trainlabels = mat_alloc(num_samples, num_classes);
    
 
-    LayerDense ld1(n_inputs, n_neurons, false, num_samples);
+    LayerDense ld1(n_inputs, n_neurons, true, num_samples);
     Relu_Activation relu(num_samples, n_neurons);
-    LayerDense ld2(n_neurons, n_neurons, false, num_samples);
+    LayerDense ld2(n_neurons, n_neurons, true, num_samples);
     Relu_Activation relu2(num_samples, n_neurons);
-    LayerDense ld3(n_neurons, num_classes, false, num_samples);
+    LayerDense ld3(n_neurons, num_classes, true, num_samples);
     
     Activation_softmax soft(num_samples, num_classes);
     Loss_categoricalCrossentropy loss(num_classes, num_samples);
     
     Optimizer_SGD opt(lr);
     std::vector<int> randvec;
-    auto start = std::chrono::high_resolution_clock::now();
     for (size_t j = 0; j < num_iters; ++j)
     {
         randvec = getrandvec(num_samples);
         trainimages = randomizeImages(images, randvec);
         trainlabels = randomizeLabels(labels, randvec);
-        
         ld1.forward(trainimages);
         relu.forward(ld1.output);
         ld2.forward(relu.output);
         relu2.forward(ld2.output);
         ld3.forward(relu2.output);
         soft.forward(ld3.output);
-        // mat_print(soft.output);
-        // std::cout << "shape " << ld3.output.rows << ", " << ld3.output.cols << std::endl;
         loss.forward(soft.output, trainlabels);
         
         
@@ -202,11 +198,11 @@ int main()
         opt.update_params(ld3);
         opt.update_params(ld2);
         opt.update_params(ld1);
-    }
-    auto stop = std::chrono::high_resolution_clock::now();
-    auto duration = stop - start;
 
-    std::cout << "time " << duration.count()/1000000 << std::endl;
+        ld1.randomize(1-randnum);
+        ld2.randomize(1-randnum);
+        ld3.randomize(1-randnum);
+    }
     
     return 0;
 }
