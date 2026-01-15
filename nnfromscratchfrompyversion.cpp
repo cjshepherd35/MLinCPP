@@ -26,6 +26,7 @@ public:
     //output for tensors forward.
     Tensor toutput;
     Mat dinputs;
+    Tensor tdinputs;
     Mat dbiases;
 
 //private:
@@ -242,7 +243,38 @@ void LayerDense::halfbackward(Mat dvalues)
 
 void LayerDense::backward(Tensor dvalues)
 {
-
+    Mat temp = mat_alloc(weights.rows, weights.cols);
+    mat_fill(dweights, 0.0);
+    mat_fill(dbiases, 0.0);
+    mat_transpose(weights_T, weights);
+    for (size_t i = 0; i < dvalues.depth; i++)
+    {
+        if (layerbias)
+        {
+            for (size_t k = 0; k < dvalues.cols; k++)
+            {
+                for (size_t j = 0; j < dvalues.rows; j++)
+                {
+                    MAT_AT(dbiases, 0, k) += MAT_AT(dvalues.mats[i], j, k);
+                }
+                
+            }
+        }
+        mat_transpose(layerinputs_T, tlayerinputs.mats[i]);
+        mat_fill(temp, 0.0);
+        mat_dot(temp, layerinputs_T, dvalues.mats[i]);
+        for (size_t j = 0; j < weights.rows; j++)
+        {
+            for (size_t k = 0; k < weights.cols; k++)
+            {
+                MAT_AT(dweights, j, k) += MAT_AT(temp, j, k) / (float)dvalues.depth;
+            }
+        }
+        mat_dot(tdinputs.mats[i], dvalues.mats[i], weights_T);
+    }
+    
+    
+    
 }
 
 void LayerDense::randomize(float percentrand)
@@ -263,19 +295,18 @@ void LayerDense::randomize(float percentrand)
     
 }
 
-
 class Subsetlayer
 {
 public:
     Subsetlayer(int n_inputs, int n_out, bool bias, int num_samples, const std::vector<std::tuple<int, int>> &randgrads);
     // LayerDense(int embed_dim, int n_out, bool bias, int batch_size, int seq_len);
     void forward(Mat inputs);
-    void forward(Tensor inputs);
+    // void forward(Tensor inputs);
     void halfforward(Mat inputs);
     void halfbackward(Mat dvalues);
     void backward(Mat dvalues);
-    void backward(Tensor dvalues);
-    void randomize(float percentrand);
+    // void backward(Tensor dvalues);
+    // void randomize(float percentrand);
     //~LayerDense();
     Mat output;
     Mat dinputs;
@@ -294,7 +325,6 @@ public:
     Mat layerinputs_T;
     std::vector<std::tuple<int, int>> fewgrads;
 };
-
 
 Subsetlayer::Subsetlayer(int n_inputs, int n_out, bool bias, int num_samples, const std::vector<std::tuple<int, int>> &randgrads)
 {
@@ -333,8 +363,7 @@ void Subsetlayer::forward(Mat inputs)
 
 void Subsetlayer::backward(Mat dvalues)
 {
-    // mat_transpose(layerinputs_T,  layerinputs);
-    // mat_dot(dweights, layerinputs_T, dvalues);
+    
     mat_fill(dweights, 0.0);
     for(const auto& [row, col] : fewgrads)
     {
@@ -344,9 +373,6 @@ void Subsetlayer::backward(Mat dvalues)
         }
     }
     
-
-
-
     if (layerbias)
     {
         for (size_t i = 0; i < dvalues.cols; i++)
@@ -1674,7 +1700,7 @@ void MultiheadAttention::forward(const Tensor& x)
 void MultiheadAttention::backward(const Tensor& dvalues)
 {
     drop.backward(dvalues);
-    //this is not set up yet
+    //this backward method is not set up yet
     den1.backward(drop.tdinputs);
     //need to separate out each head and then we can backprop through each one. then combine them back together?
 }
