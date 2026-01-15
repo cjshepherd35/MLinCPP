@@ -1674,6 +1674,7 @@ void MultiheadAttention::forward(const Tensor& x)
 void MultiheadAttention::backward(const Tensor& dvalues)
 {
     drop.backward(dvalues);
+    //this is not set up yet
     den1.backward(drop.tdinputs);
     //need to separate out each head and then we can backprop through each one. then combine them back together?
 }
